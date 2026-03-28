@@ -1,0 +1,24 @@
+[gd_scene load_steps=2 format=3 uid="uid://ccqjqbvchq6rn"]
+
+[ext_resource type="Script" uid="uid://5sj6y1fkvked" path="res://scripts/mainScenes/Game.cs" id="1_u47a3"]
+
+[node name="Game" type="Control"]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("1_u47a3")
+
+[node name="CenterContainer" type="CenterContainer" parent="."]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CenterContainer"]
+layout_mode = 2
+
+[node name="Lobby" type="Button" parent="CenterContainer/VBoxContainer"]
+layout_mode = 2
+text = "Go to Lobby"
+
+[node name="MainMenu" type="Button" parent="CenterContainer/VBoxContainer"]
+layout_mode = 2
+text = "Main Menu"
