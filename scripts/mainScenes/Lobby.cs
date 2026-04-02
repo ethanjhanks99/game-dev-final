@@ -1,4 +1,5 @@
 using Godot;
+using System;
 
 public partial class Lobby : Control
 {
@@ -13,12 +14,33 @@ public partial class Lobby : Control
 		_StartGame.Pressed += _on_StartGame_pressed;
 		_MainMenu.Pressed += _on_MainMenu_pressed;
 
+
+        Multiplayer.PeerConnected += OnPeerConnected;
+        Multiplayer.PeerDisconnected += OnPeerDisconnected;
+
 	}
 
 	// Called every frame. 'delta' is the elapsed time since the previous frame.
 	public override void _Process(double delta)
 	{
 	}
+
+
+	private void OnPeerConnected(long id)
+{
+    if (Multiplayer.IsServer())
+    {
+        GD.Print($"Client with ID {id} has joined the server.");
+    }
+}
+
+private void OnPeerDisconnected(long id)
+{
+    if (Multiplayer.IsServer())
+    {
+        GD.Print($"Client with ID {id} has left the server.");
+    }
+}
 
 	private void _on_StartGame_pressed()
 	{
