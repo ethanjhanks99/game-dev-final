@@ -36,9 +36,14 @@ layout_mode = 2
 text = "Status"
 autowrap_mode = 3
 
+[node name="TimerLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox"]
+layout_mode = 2
+text = "Time: 30s"
+theme_override_font_sizes/font_size = 20
+
 [node name="HelpLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox"]
 layout_mode = 2
-text = "Left click: select own unit | Right click: queue move/attack\nEnd Player Turn: lock player orders | Resolve Turn: execute now"
+text = "Left click: select unit / extend path / backtrack | Right click: cancel path\nEnd Player Turn (Enter): lock in | Timer expires: turn auto-skipped"
 autowrap_mode = 3
 
 [node name="EndTurnButton" type="Button" parent="CanvasLayer/UI/Margin/VBox"]

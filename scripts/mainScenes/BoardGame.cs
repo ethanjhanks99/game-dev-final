@@ -6,30 +6,43 @@ using System.Linq;
 public partial class BoardGame : Node2D
 {
 	private const int TilePixelSize = 28;
+	private const double TurnTimeLimitSeconds = 30.0;
+
 	private readonly Vector2 _boardOrigin = new Vector2(350, 220);
 	private readonly PlayerSide[] _turnOrder = { PlayerSide.One, PlayerSide.Two, PlayerSide.Three, PlayerSide.Four };
 
 	private GridCombatController _controller;
 	private MoveHighlightOverlay _overlay;
 	private Label _statusLabel;
+	private Label _timerLabel;
 	private RichTextLabel _logLabel;
 
 	// Grass tile extracted from the top-left 32x32 region of Tileset.png.
 	private Texture2D _grassTexture;
 	private static readonly Rect2 GrassSrcRegion = new Rect2(0, 0, 32, 32);
 
-	private readonly HashSet<Vector2I> _reachableTiles = new HashSet<Vector2I>();
 	private readonly HashSet<PlayerSide> _lockedPlayers = new HashSet<PlayerSide>();
 	private readonly Dictionary<PlayerSide, PlayerTurnSelection> _pendingSelections = new Dictionary<PlayerSide, PlayerTurnSelection>();
 
+	// Per-unit committed path states for the active player (persists until deselected or turn resolves).
+	private readonly Dictionary<string, PathMovementState> _unitPaths = new Dictionary<string, PathMovementState>();
+
 	private PlayerSide _activePlayer = PlayerSide.One;
 	private string _selectedUnitId;
+
+	// The active path-building state for the currently selected unit (null when nothing is selected).
+	private PathMovementState _activePath;
+
+	// Turn timer state.
+	private double _timeRemaining;
+	private bool _timerRunning;
 
 	public override void _Ready()
 	{
 		_controller = GetNode<GridCombatController>("GridCombatController");
 		_overlay = GetNode<MoveHighlightOverlay>("MoveHighlightOverlay");
 		_statusLabel = GetNode<Label>("CanvasLayer/UI/Margin/VBox/StatusLabel");
+		_timerLabel = GetNode<Label>("CanvasLayer/UI/Margin/VBox/TimerLabel");
 		_logLabel = GetNode<RichTextLabel>("CanvasLayer/UI/Margin/VBox/LogLabel");
 
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/EndTurnButton").Pressed += OnEndTurnPressed;
@@ -45,8 +58,24 @@ public partial class BoardGame : Node2D
 		ResetTurnPlanning();
 		SpawnDemoArmies();
 		UpdateStatusText();
-		AppendLog("Board initialized. Select your own unit with left-click.");
+		StartTurnTimer();
+		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
 		QueueRedraw();
+	}
+
+	public override void _Process(double delta)
+	{
+		if (!_timerRunning) return;
+
+		_timeRemaining -= delta;
+
+		if (_timeRemaining <= 0.0)
+		{
+			_timeRemaining = 0.0;
+			OnTurnTimerExpired();
+		}
+
+		UpdateTimerLabel();
 	}
 
 	public override void _Draw()
@@ -137,85 +166,159 @@ public partial class BoardGame : Node2D
 
 	private void HandleLeftClick(Vector2I tile)
 	{
-		if (!_controller.Board.TryGetUnitAt(tile, out BoardUnit unit))
+		// --- Case 1: Clicked on a unit ---
+		if (_controller.Board.TryGetUnitAt(tile, out BoardUnit unit))
 		{
-			ClearSelection();
+			if (unit.Owner != _activePlayer)
+			{
+				AppendLog($"It is {PlayerName(_activePlayer)}'s turn. You cannot select {PlayerName(unit.Owner)} units now.");
+				return;
+			}
+
+			// Clicking the already-selected unit trims the path back to origin (full reset).
+			// If there was no path built yet, deselect instead.
+			if (unit.Id == _selectedUnitId)
+			{
+				if (_activePath != null && _activePath.HasPath)
+				{
+					_activePath.TryTrimToTile(_activePath.Origin);
+					AppendLog($"Path for {_selectedUnitId} reset to origin.");
+					RefreshPathOverlay();
+					UpdateStatusText();
+				}
+				else
+				{
+					CommitActivePathAndDeselect();
+				}
+				return;
+			}
+
+			// Switching to a different unit — commit current path first.
+			if (_activePath != null)
+			{
+				CommitCurrentPath();
+			}
+
+			SelectUnit(unit);
 			return;
 		}
 
-		if (unit.Owner != _activePlayer)
+		// --- Case 2: Clicked on a frontier tile (extend path) ---
+		if (_activePath != null)
 		{
-			AppendLog($"It is {PlayerName(_activePlayer)}'s turn. You cannot select {PlayerName(unit.Owner)} units now.");
-			return;
+			IReadOnlyList<Vector2I> frontier = _activePath.GetFrontierTiles();
+			if (frontier.Contains(tile))
+			{
+				_activePath.TryExtendPath(tile);
+				RefreshPathOverlay();
+
+				if (_activePath.IsComplete)
+				{
+					AppendLog($"Path for {_selectedUnitId} is complete (movement exhausted). Path locked in.");
+					CommitCurrentPath();
+				}
+				return;
+			}
+
+			// --- Case 3: Clicked on a tile already in the path (backtrack) ---
+			// This includes clicking the origin tile to reset the whole path.
+			if (_activePath.IsPathTile(tile))
+			{
+				bool trimmed = _activePath.TryTrimToTile(tile);
+				if (trimmed)
+				{
+					string label = tile == _activePath.Origin ? "origin (full reset)" : tile.ToString();
+					AppendLog($"Path for {_selectedUnitId} trimmed back to {label}.");
+					RefreshPathOverlay();
+					UpdateStatusText();
+				}
+				return;
+			}
 		}
 
-		_selectedUnitId = unit.Id;
-		_reachableTiles.Clear();
-		foreach (Vector2I coord in _controller.ComputeReachableTiles(unit.Id))
-		{
-			_reachableTiles.Add(coord);
-		}
-
-		_overlay.SetHighlightedTiles(_reachableTiles);
-		UpdateStatusText();
-		QueueRedraw();
+		// --- Case 4: Clicked on empty non-frontier, non-path tile — deselect ---
+		CommitActivePathAndDeselect();
 	}
 
 	private void HandleRightClick(Vector2I tile)
 	{
-		if (string.IsNullOrWhiteSpace(_selectedUnitId))
+		// Right-click cancels the current unit selection and discards the in-progress path.
+		if (!string.IsNullOrWhiteSpace(_selectedUnitId))
 		{
-			AppendLog("Select a unit first.");
+			AppendLog($"Cancelled path for {_selectedUnitId}.");
+			// Remove any previously committed path for this unit from pending selections.
+			if (_unitPaths.ContainsKey(_selectedUnitId))
+			{
+				_unitPaths.Remove(_selectedUnitId);
+				PlayerTurnSelection selection = _pendingSelections[_activePlayer];
+				selection.Moves.RemoveAll(move => move.UnitId == _selectedUnitId);
+			}
+		}
+		ClearSelection();
+	}
+
+	// ---- Path-building helpers ----
+
+	/// <summary>Selects a unit and initializes a fresh (or resumable) path state for it.</summary>
+	private void SelectUnit(BoardUnit unit)
+	{
+		_selectedUnitId = unit.Id;
+
+		// Resume an existing in-progress path if the player re-selects the unit.
+		if (_unitPaths.TryGetValue(unit.Id, out PathMovementState existing))
+		{
+			_activePath = existing;
+		}
+		else
+		{
+			_activePath = new PathMovementState(unit, _controller.Board.SnapshotOccupancy());
+			// Don't store in _unitPaths yet — only store once the player commits at least one step.
+		}
+
+		RefreshPathOverlay();
+		UpdateStatusText();
+		AppendLog($"Selected {unit.Id}. Click highlighted tiles to build a path. Right-click to cancel.");
+	}
+
+	/// <summary>Refreshes the overlay to show the current path and frontier.</summary>
+	private void RefreshPathOverlay()
+	{
+		if (_activePath == null)
+		{
+			_overlay.ClearHighlights();
+			QueueRedraw();
 			return;
 		}
 
-		if (!_controller.Board.TryGetUnit(_selectedUnitId, out BoardUnit selected) || selected.Owner != _activePlayer)
-		{
-			AppendLog("Selected unit is no longer valid for this player.");
-			ClearSelection();
-			return;
-		}
+		_overlay.SetPathHighlights(_activePath.CommittedPath, _activePath.GetFrontierTiles());
+		QueueRedraw();
+	}
+
+	/// <summary>
+	/// Writes the active path into the pending move selection, stores it in _unitPaths,
+	/// but keeps the unit selected (player can keep extending if they re-select later).
+	/// </summary>
+	private void CommitCurrentPath()
+	{
+		if (_activePath == null || !_activePath.HasPath) return;
+
+		string unitId = _selectedUnitId;
+		Vector2I destination = _activePath.GetFinalDestination();
 
 		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
-		if (_controller.Board.TryGetUnitAt(tile, out BoardUnit target))
-		{
-			TryQueueAttack(selection, selected, target);
-			return;
-		}
+		selection.Moves.RemoveAll(move => move.UnitId == unitId);
+		selection.Moves.Add(new MoveOrder(unitId, destination));
 
-		if (!_reachableTiles.Contains(tile))
-		{
-			AppendLog("Target tile is not in valid movement range.");
-			return;
-		}
-
-		selection.Moves.RemoveAll(move => move.UnitId == selected.Id);
-		selection.Attacks.RemoveAll(attack => attack.AttackerUnitId == selected.Id);
-		selection.Moves.Add(new MoveOrder(selected.Id, tile));
-		AppendLog($"Queued move for {selected.Id} to {tile}.");
+		_unitPaths[unitId] = _activePath;
+		AppendLog($"Path committed for {unitId}: destination {destination}.");
 		UpdateStatusText();
 	}
 
-	private void TryQueueAttack(PlayerTurnSelection selection, BoardUnit attacker, BoardUnit target)
+	/// <summary>Commits the active path (if any) and then clears the selection.</summary>
+	private void CommitActivePathAndDeselect()
 	{
-		if (attacker.Owner == target.Owner)
-		{
-			AppendLog("Friendly fire is disabled.");
-			return;
-		}
-
-		int distance = GridTypes.ManhattanDistance(attacker.Position, target.Position);
-		if (distance < 1 || distance > attacker.Stats.AttackRange)
-		{
-			AppendLog("Target is out of attack range.");
-			return;
-		}
-
-		selection.Moves.RemoveAll(move => move.UnitId == attacker.Id);
-		selection.Attacks.RemoveAll(attack => attack.AttackerUnitId == attacker.Id);
-		selection.Attacks.Add(new AttackOrder(attacker.Id, target.Id));
-		AppendLog($"Queued attack: {attacker.Id} -> {target.Id}.");
-		UpdateStatusText();
+		CommitCurrentPath();
+		ClearSelection();
 	}
 
 	private void OnEndTurnPressed()
@@ -224,6 +327,12 @@ public partial class BoardGame : Node2D
 		{
 			AppendLog($"{PlayerName(_activePlayer)} is already locked in.");
 			return;
+		}
+
+		// Auto-commit any path the player was mid-building before locking in.
+		if (_activePath != null && _activePath.HasPath)
+		{
+			CommitCurrentPath();
 		}
 
 		_lockedPlayers.Add(_activePlayer);
@@ -237,6 +346,7 @@ public partial class BoardGame : Node2D
 
 		AdvanceToNextUnlockedPlayer();
 		ClearSelection();
+		RestartTurnTimer();
 		UpdateStatusText();
 	}
 
@@ -253,6 +363,8 @@ public partial class BoardGame : Node2D
 
 	private void ResolveAllLockedTurns()
 	{
+		StopTurnTimer();
+
 		IEnumerable<PlayerTurnSelection> selections = _turnOrder.Select(side => _pendingSelections[side]);
 		TurnResolutionReport report = _controller.ResolveTurn(selections);
 
@@ -265,8 +377,75 @@ public partial class BoardGame : Node2D
 		ResetTurnPlanning();
 		_activePlayer = PlayerSide.One;
 		ClearSelection();
+		RestartTurnTimer();
 		UpdateStatusText();
 		QueueRedraw();
+	}
+
+	// ---- Turn timer ----
+
+	private void StartTurnTimer()
+	{
+		_timeRemaining = TurnTimeLimitSeconds;
+		_timerRunning = true;
+		UpdateTimerLabel();
+	}
+
+	private void RestartTurnTimer()
+	{
+		_timeRemaining = TurnTimeLimitSeconds;
+		_timerRunning = true;
+		UpdateTimerLabel();
+	}
+
+	private void StopTurnTimer()
+	{
+		_timerRunning = false;
+		UpdateTimerLabel();
+	}
+
+	private void OnTurnTimerExpired()
+	{
+		_timerRunning = false;
+		AppendLog($"{PlayerName(_activePlayer)}'s time ran out — turn skipped (no moves locked in).");
+
+		// Lock the player in with whatever they have (possibly nothing).
+		if (_activePath != null && _activePath.HasPath)
+		{
+			CommitCurrentPath();
+		}
+
+		_lockedPlayers.Add(_activePlayer);
+
+		if (_lockedPlayers.Count >= _turnOrder.Length)
+		{
+			ResolveAllLockedTurns();
+			return;
+		}
+
+		AdvanceToNextUnlockedPlayer();
+		ClearSelection();
+		RestartTurnTimer();
+		UpdateStatusText();
+	}
+
+	private void UpdateTimerLabel()
+	{
+		if (_timerLabel == null) return;
+
+		int seconds = (int)Math.Ceiling(_timeRemaining);
+		_timerLabel.Text = $"Time: {seconds}s";
+
+		// Turn the label red in the final 10 seconds.
+		if (_timeRemaining <= 10.0 && _timerRunning)
+		{
+			float urgency = 1.0f - (float)(_timeRemaining / 10.0);
+			_timerLabel.Modulate = new Color(1.0f, 1.0f - urgency * 0.8f, 1.0f - urgency * 0.8f);
+		}
+		else
+		{
+			_timerLabel.Modulate = new Color(1f, 1f, 1f);
+		}
 	}
 
 	private void OnMainMenuPressed()
@@ -295,6 +474,7 @@ public partial class BoardGame : Node2D
 	{
 		_lockedPlayers.Clear();
 		_pendingSelections.Clear();
+		_unitPaths.Clear();
 		foreach (PlayerSide side in _turnOrder)
 		{
 			_pendingSelections[side] = new PlayerTurnSelection(side);
@@ -339,7 +519,7 @@ public partial class BoardGame : Node2D
 	private void ClearSelection()
 	{
 		_selectedUnitId = string.Empty;
-		_reachableTiles.Clear();
+		_activePath = null;
 		_overlay.ClearHighlights();
 		UpdateStatusText();
 		QueueRedraw();
@@ -358,18 +538,14 @@ public partial class BoardGame : Node2D
 
 	// Returns a semi-transparent overlay drawn on top of the grass texture.
 	// Transparent (alpha=0) means no overlay — just the grass shows through.
+	// Note: path and frontier tile highlighting is handled by MoveHighlightOverlay,
+	// so this method only needs to handle base tiles and field ownership tints.
 	private Color GetTileOverlayColor(Vector2I tile)
 	{
 		if (_controller.Board.IsBaseTile(tile))
 		{
 			// Gold tint for base tiles.
 			return new Color(0.95f, 0.78f, 0.25f, 0.55f);
-		}
-
-		if (_reachableTiles.Contains(tile))
-		{
-			// Green tint for valid movement tiles.
-			return new Color(0.42f, 0.78f, 0.38f, 0.50f);
 		}
 
 		PlayerSide owner = GridTypes.GetFieldOwner(tile);
@@ -422,7 +598,16 @@ public partial class BoardGame : Node2D
 	{
 		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
 		string selectionLabel = string.IsNullOrWhiteSpace(_selectedUnitId) ? "none" : _selectedUnitId;
-		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Selected: {selectionLabel} | Queued Moves: {selection.Moves.Count} | Queued Attacks: {selection.Attacks.Count} | Locked: {_lockedPlayers.Count}/4";
+
+		string pathInfo = "";
+		if (_activePath != null)
+		{
+			int steps = _activePath.CommittedPath.Count;
+			int frontier = _activePath.GetFrontierTiles().Count;
+			pathInfo = $" | Path steps: {steps} | Next options: {frontier}";
+		}
+
+		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Selected: {selectionLabel}{pathInfo} | Queued Moves: {selection.Moves.Count} | Locked: {_lockedPlayers.Count}/4";
 	}
 
 	private void AppendLog(string message)
