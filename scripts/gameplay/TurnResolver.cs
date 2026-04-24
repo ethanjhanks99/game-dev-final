@@ -24,17 +24,18 @@ public static class TurnResolver
 			allAttacks.AddRange(playerSelection.Attacks);
 		}
 
-		ApplySimultaneousMoves(board, allMoves, report);
-		ApplySimultaneousAttacks(board, allAttacks, report);
+		HashSet<string> movedUnits = ApplySimultaneousMoves(board, allMoves, report);
+		ApplySimultaneousAttacks(board, allAttacks, movedUnits, report);
 		RemoveDeadUnits(board, report);
 		return report;
 	}
 
-	private static void ApplySimultaneousMoves(BoardState board, Dictionary<string, MoveOrder> allMoves, TurnResolutionReport report)
+	private static HashSet<string> ApplySimultaneousMoves(BoardState board, Dictionary<string, MoveOrder> allMoves, TurnResolutionReport report)
 	{
 		Dictionary<string, Vector2I> startPositions = board.Units.ToDictionary(unit => unit.Id, unit => unit.Position);
 		Dictionary<Vector2I, List<string>> destinationClaims = new Dictionary<Vector2I, List<string>>();
 		HashSet<string> invalidMoves = new HashSet<string>();
+		HashSet<string> movedUnits = new HashSet<string>();
 
 		foreach (MoveOrder move in allMoves.Values)
 		{
@@ -47,6 +48,12 @@ public static class TurnResolver
 
 			if (!board.CanMoveUnit(move.UnitId, move.Destination, out string reason))
 			{
+				if (reason == "Target tile is occupied." && TryResolveMeleeContact(board, unit, move, report))
+				{
+					invalidMoves.Add(move.UnitId);
+					continue;
+				}
+
 				report.MoveResults.Add(new UnitMoveResolution(move.UnitId, unit.Position, move.Destination, false, reason));
 				invalidMoves.Add(move.UnitId);
 				continue;
@@ -146,15 +153,18 @@ public static class TurnResolver
 			if (board.MoveUnit(unit.Id, move.Destination, out string reason))
 			{
 				report.MoveResults.Add(new UnitMoveResolution(unit.Id, start, move.Destination, true, string.Empty));
+				movedUnits.Add(unit.Id);
 			}
 			else
 			{
 				report.MoveResults.Add(new UnitMoveResolution(unit.Id, start, move.Destination, false, reason));
 			}
 		}
+
+		return movedUnits;
 	}
 
-	private static void ApplySimultaneousAttacks(BoardState board, List<AttackOrder> allAttacks, TurnResolutionReport report)
+	private static void ApplySimultaneousAttacks(BoardState board, List<AttackOrder> allAttacks, ISet<string> movedUnits, TurnResolutionReport report)
 	{
 		Dictionary<string, int> incomingDamage = new Dictionary<string, int>();
 
@@ -164,6 +174,23 @@ public static class TurnResolver
 			{
 				report.AttackResults.Add(new UnitAttackResolution(attack.AttackerUnitId, attack.TargetUnitId, 0, false, "Attacker is missing or dead."));
 				continue;
+			}
+
+			if (attacker.Stats.Type == UnitType.Archer)
+			{
+				if (movedUnits.Contains(attacker.Id))
+				{
+					report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archers cannot move and attack on the same turn."));
+					continue;
+				}
+
+				int requiredAttackPoints = MovementPointSystem.GetAttackCost(attacker.Stats.Type);
+				int availableAttackPoints = MovementPointSystem.TotalMovementPointsPerTurn;
+				if (requiredAttackPoints > availableAttackPoints)
+				{
+					report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archer attack failed: insufficient movement points to pay attack cost."));
+					continue;
+				}
 			}
 
 			if (!board.TryGetUnit(attack.TargetUnitId, out BoardUnit target) || !target.IsAlive)
@@ -207,6 +234,37 @@ public static class TurnResolver
 				target.ApplyDamage(damageEntry.Value);
 			}
 		}
+	}
+
+	private static bool TryResolveMeleeContact(BoardState board, BoardUnit attacker, MoveOrder move, TurnResolutionReport report)
+	{
+		bool isMeleeUnit = attacker.Stats.Type == UnitType.Cavalry || attacker.Stats.Type == UnitType.Infantry;
+		if (!isMeleeUnit)
+		{
+			return false;
+		}
+
+		if (!board.TryGetUnitAt(move.Destination, out BoardUnit target))
+		{
+			return false;
+		}
+
+		if (target.Owner == attacker.Owner)
+		{
+			report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Cannot initiate melee on a friendly unit tile."));
+			return true;
+		}
+
+		ISet<Vector2I> attackReach = board.GetReachableTiles(attacker.Id, includeOccupiedTiles: true);
+		if (!attackReach.Contains(move.Destination))
+		{
+			report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Target tile is not reachable for melee contact."));
+			return true;
+		}
+
+		report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Melee contact initiated (combat resolution not implemented for tile-sharing)."));
+		report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, 0, true, "Melee contact registered."));
+		return true;
 	}
 
 	private static int GetDirectionalDefense(BoardUnit target, Vector2I attackerPosition)

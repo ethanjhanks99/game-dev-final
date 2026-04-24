@@ -15,7 +15,12 @@ public partial class BoardGame : Node2D
 	private MoveHighlightOverlay _overlay;
 	private Label _statusLabel;
 	private Label _timerLabel;
+	private Label _purchaseLabel;
 	private RichTextLabel _logLabel;
+	private Button _buyInfantryButton;
+	private Button _buyArcherButton;
+	private Button _buyCavalryButton;
+	private Button _confirmPlacementButton;
 
 	// Grass tile extracted from the top-left 32x32 region of Tileset.png.
 	private Texture2D _grassTexture;
@@ -23,6 +28,10 @@ public partial class BoardGame : Node2D
 
 	private readonly HashSet<PlayerSide> _lockedPlayers = new HashSet<PlayerSide>();
 	private readonly Dictionary<PlayerSide, PlayerTurnSelection> _pendingSelections = new Dictionary<PlayerSide, PlayerTurnSelection>();
+	private readonly Dictionary<PlayerSide, int> _unitPointsByPlayer = new Dictionary<PlayerSide, int>();
+	private readonly Dictionary<PlayerSide, int> _turnsTakenByPlayer = new Dictionary<PlayerSide, int>();
+	private readonly Dictionary<PlayerSide, int> _nextSpawnIndexByPlayer = new Dictionary<PlayerSide, int>();
+	private readonly IReadOnlyDictionary<PlayerSide, HashSet<Vector2I>> _baseAreas = BaseAreaDefinitions.BuildBaseAreas();
 
 	// Per-unit committed path states for the active player (persists until deselected or turn resolves).
 	private readonly Dictionary<string, PathMovementState> _unitPaths = new Dictionary<string, PathMovementState>();
@@ -32,6 +41,9 @@ public partial class BoardGame : Node2D
 
 	// The active path-building state for the currently selected unit (null when nothing is selected).
 	private PathMovementState _activePath;
+	private UnitType? _pendingPlacementType;
+	private Vector2I? _pendingPlacementTile;
+	private readonly List<Vector2I> _pendingPlacementCandidates = new List<Vector2I>();
 
 	// Turn timer state.
 	private double _timeRemaining;
@@ -43,11 +55,20 @@ public partial class BoardGame : Node2D
 		_overlay = GetNode<MoveHighlightOverlay>("MoveHighlightOverlay");
 		_statusLabel = GetNode<Label>("CanvasLayer/UI/Margin/VBox/StatusLabel");
 		_timerLabel = GetNode<Label>("CanvasLayer/UI/Margin/VBox/TimerLabel");
+		_purchaseLabel = GetNode<Label>("CanvasLayer/UI/Margin/VBox/PurchaseLabel");
 		_logLabel = GetNode<RichTextLabel>("CanvasLayer/UI/Margin/VBox/LogLabel");
+		_buyInfantryButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyInfantryButton");
+		_buyArcherButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyArcherButton");
+		_buyCavalryButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyCavalryButton");
+		_confirmPlacementButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/ConfirmPlacementButton");
 
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/EndTurnButton").Pressed += OnEndTurnPressed;
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/ResolveTurnButton").Pressed += OnResolveTurnPressed;
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/MainMenuButton").Pressed += OnMainMenuPressed;
+		_buyInfantryButton.Pressed += () => TryPurchaseAndPlaceUnit(UnitType.Infantry);
+		_buyArcherButton.Pressed += () => TryPurchaseAndPlaceUnit(UnitType.Archer);
+		_buyCavalryButton.Pressed += () => TryPurchaseAndPlaceUnit(UnitType.Cavalry);
+		_confirmPlacementButton.Pressed += OnConfirmPlacementPressed;
 
 		_overlay.TilePixelSize = TilePixelSize;
 		_overlay.Position = _boardOrigin;
@@ -56,10 +77,12 @@ public partial class BoardGame : Node2D
 		_grassTexture = GD.Load<Texture2D>("res://assets/textures/Tileset.png");
 
 		ResetTurnPlanning();
-		SpawnDemoArmies();
+		InitializeUnitEconomy();
+		OnPlayerTurnStarted(_activePlayer);
 		UpdateStatusText();
 		StartTurnTimer();
 		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
+		AppendLog("Unit purchases: [I] Infantry (1), [A] Archer (2), [C] Cavalry (3). Each player starts with 12 unit points.");
 		QueueRedraw();
 	}
 
@@ -114,6 +137,18 @@ public partial class BoardGame : Node2D
 			{
 				OnResolveTurnPressed();
 			}
+			else if (keyEvent.Keycode == Key.I)
+			{
+				TryPurchaseAndPlaceUnit(UnitType.Infantry);
+			}
+			else if (keyEvent.Keycode == Key.A)
+			{
+				TryPurchaseAndPlaceUnit(UnitType.Archer);
+			}
+			else if (keyEvent.Keycode == Key.C)
+			{
+				TryPurchaseAndPlaceUnit(UnitType.Cavalry);
+			}
 		}
 	}
 
@@ -166,6 +201,12 @@ public partial class BoardGame : Node2D
 
 	private void HandleLeftClick(Vector2I tile)
 	{
+		if (_pendingPlacementType.HasValue)
+		{
+			HandlePlacementTileSelection(tile);
+			return;
+		}
+
 		// --- Case 1: Clicked on a unit ---
 		if (_controller.Board.TryGetUnitAt(tile, out BoardUnit unit))
 		{
@@ -242,6 +283,12 @@ public partial class BoardGame : Node2D
 
 	private void HandleRightClick(Vector2I tile)
 	{
+		if (_pendingPlacementType.HasValue)
+		{
+			CancelPendingPlacement("Placement selection cancelled.");
+			return;
+		}
+
 		// Right-click cancels the current unit selection and discards the in-progress path.
 		if (!string.IsNullOrWhiteSpace(_selectedUnitId))
 		{
@@ -323,6 +370,11 @@ public partial class BoardGame : Node2D
 
 	private void OnEndTurnPressed()
 	{
+		if (_pendingPlacementType.HasValue)
+		{
+			CancelPendingPlacement("Pending placement was cleared when ending turn.");
+		}
+
 		if (_lockedPlayers.Contains(_activePlayer))
 		{
 			AppendLog($"{PlayerName(_activePlayer)} is already locked in.");
@@ -345,6 +397,7 @@ public partial class BoardGame : Node2D
 		}
 
 		AdvanceToNextUnlockedPlayer();
+		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
 		UpdateStatusText();
@@ -363,6 +416,11 @@ public partial class BoardGame : Node2D
 
 	private void ResolveAllLockedTurns()
 	{
+		if (_pendingPlacementType.HasValue)
+		{
+			CancelPendingPlacement("Pending placement cleared before turn resolution.");
+		}
+
 		StopTurnTimer();
 
 		IEnumerable<PlayerTurnSelection> selections = _turnOrder.Select(side => _pendingSelections[side]);
@@ -376,6 +434,7 @@ public partial class BoardGame : Node2D
 
 		ResetTurnPlanning();
 		_activePlayer = PlayerSide.One;
+		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
 		UpdateStatusText();
@@ -409,6 +468,11 @@ public partial class BoardGame : Node2D
 		_timerRunning = false;
 		AppendLog($"{PlayerName(_activePlayer)}'s time ran out — turn skipped (no moves locked in).");
 
+		if (_pendingPlacementType.HasValue)
+		{
+			CancelPendingPlacement("Pending placement was cleared when time expired.");
+		}
+
 		// Lock the player in with whatever they have (possibly nothing).
 		if (_activePath != null && _activePath.HasPath)
 		{
@@ -424,6 +488,7 @@ public partial class BoardGame : Node2D
 		}
 
 		AdvanceToNextUnlockedPlayer();
+		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
 		UpdateStatusText();
@@ -478,6 +543,249 @@ public partial class BoardGame : Node2D
 		foreach (PlayerSide side in _turnOrder)
 		{
 			_pendingSelections[side] = new PlayerTurnSelection(side);
+		}
+	}
+
+	private void InitializeUnitEconomy()
+	{
+		_unitPointsByPlayer.Clear();
+		_turnsTakenByPlayer.Clear();
+		_nextSpawnIndexByPlayer.Clear();
+
+		foreach (PlayerSide side in _turnOrder)
+		{
+			_unitPointsByPlayer[side] = UnitPointSystem.StartingUnitPoints;
+			_turnsTakenByPlayer[side] = 0;
+			_nextSpawnIndexByPlayer[side] = 1;
+		}
+	}
+
+	private void OnPlayerTurnStarted(PlayerSide side)
+	{
+		if (!_turnsTakenByPlayer.ContainsKey(side))
+		{
+			return;
+		}
+
+		if (_turnsTakenByPlayer[side] > 0 && _controller.Board.CountAliveUnits(side) > 0)
+		{
+			_unitPointsByPlayer[side] += UnitPointSystem.UnitPointGainPerTurn;
+			AppendLog($"{PlayerName(side)} gains {UnitPointSystem.UnitPointGainPerTurn} unit point (now {_unitPointsByPlayer[side]}).");
+		}
+
+		_turnsTakenByPlayer[side] += 1;
+	}
+
+	private void TryPurchaseAndPlaceUnit(UnitType type)
+	{
+		if (_lockedPlayers.Contains(_activePlayer))
+		{
+			AppendLog($"{PlayerName(_activePlayer)} is already locked and cannot buy units this turn.");
+			return;
+		}
+
+		int cost = UnitPointSystem.GetUnitCost(type);
+		int available = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
+
+		if (available < cost)
+		{
+			AppendLog($"Not enough unit points for {type}. Need {cost}, have {available}.");
+			return;
+		}
+
+		List<Vector2I> availableTiles = GetAvailableSpawnTiles(_activePlayer);
+		if (availableTiles.Count == 0)
+		{
+			AppendLog($"No open base tile available for {PlayerName(_activePlayer)}.");
+			return;
+		}
+
+		if (_activePath != null && _activePath.HasPath)
+		{
+			CommitCurrentPath();
+		}
+
+		_selectedUnitId = string.Empty;
+		_activePath = null;
+		_pendingPlacementType = type;
+		_pendingPlacementTile = null;
+		_pendingPlacementCandidates.Clear();
+		_pendingPlacementCandidates.AddRange(availableTiles);
+		_overlay.SetHighlightedTiles(_pendingPlacementCandidates);
+		AppendLog($"Placement started for {type}. Click an open tile in your base, then press Confirm Placement.");
+		UpdateStatusText();
+		QueueRedraw();
+	}
+
+	private void OnConfirmPlacementPressed()
+	{
+		if (!_pendingPlacementType.HasValue)
+		{
+			AppendLog("No placement is pending. Choose a unit type first.");
+			return;
+		}
+
+		if (!_pendingPlacementTile.HasValue)
+		{
+			AppendLog("Select a home-base tile before confirming placement.");
+			return;
+		}
+
+		UnitType type = _pendingPlacementType.Value;
+		Vector2I tile = _pendingPlacementTile.Value;
+		int cost = UnitPointSystem.GetUnitCost(type);
+		int available = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
+		if (available < cost)
+		{
+			AppendLog($"Placement failed: not enough points for {type}. Need {cost}, have {available}.");
+			CancelPendingPlacement();
+			return;
+		}
+
+		if (!_baseAreas.TryGetValue(_activePlayer, out HashSet<Vector2I> area) || !area.Contains(tile))
+		{
+			AppendLog("Placement failed: selected tile is no longer in your base area.");
+			CancelPendingPlacement();
+			return;
+		}
+
+		if (_controller.Board.TryGetUnitAt(tile, out _))
+		{
+			AppendLog("Placement failed: selected tile is occupied.");
+			_pendingPlacementTile = null;
+			_overlay.SetHighlightedTiles(GetAvailableSpawnTiles(_activePlayer));
+			UpdateStatusText();
+			return;
+		}
+
+		string id = BuildPurchasedUnitId(_activePlayer, type);
+		FacingDirection facing = GetDefaultFacing(_activePlayer);
+		if (!_controller.SpawnUnit(type, id, _activePlayer, tile, facing, out string reason))
+		{
+			AppendLog($"Failed to spawn purchased unit {id}: {reason}");
+			return;
+		}
+
+		_unitPointsByPlayer[_activePlayer] = available - cost;
+		AppendLog($"{PlayerName(_activePlayer)} placed {type} ({id}) at {tile} for {cost} point(s). Remaining: {_unitPointsByPlayer[_activePlayer]}.");
+		CancelPendingPlacement();
+		UpdateStatusText();
+		QueueRedraw();
+	}
+
+	private bool TryGetNextSpawnTile(PlayerSide side, out Vector2I tile)
+	{
+		tile = new Vector2I(0, 0);
+		if (!_baseAreas.TryGetValue(side, out HashSet<Vector2I> area))
+		{
+			return false;
+		}
+
+		Vector2I anchor = GridTypes.BaseTiles.TryGetValue(side, out Vector2I baseTile)
+			? baseTile
+			: area.First();
+
+		List<Vector2I> ordered = area
+			.OrderBy(t => GridTypes.ManhattanDistance(t, anchor))
+			.ThenBy(t => t.Y)
+			.ThenBy(t => t.X)
+			.ToList();
+
+		foreach (Vector2I candidate in ordered)
+		{
+			if (!_controller.Board.TryGetUnitAt(candidate, out _))
+			{
+				tile = candidate;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private List<Vector2I> GetAvailableSpawnTiles(PlayerSide side)
+	{
+		List<Vector2I> tiles = new List<Vector2I>();
+		if (!_baseAreas.TryGetValue(side, out HashSet<Vector2I> area))
+		{
+			return tiles;
+		}
+
+		Vector2I anchor = GridTypes.BaseTiles.TryGetValue(side, out Vector2I baseTile)
+			? baseTile
+			: area.First();
+
+		IEnumerable<Vector2I> ordered = area
+			.OrderBy(t => GridTypes.ManhattanDistance(t, anchor))
+			.ThenBy(t => t.Y)
+			.ThenBy(t => t.X);
+
+		foreach (Vector2I candidate in ordered)
+		{
+			if (!_controller.Board.TryGetUnitAt(candidate, out _))
+			{
+				tiles.Add(candidate);
+			}
+		}
+
+		return tiles;
+	}
+
+	private void HandlePlacementTileSelection(Vector2I tile)
+	{
+		if (!_pendingPlacementCandidates.Contains(tile))
+		{
+			AppendLog($"{tile} is not a valid open tile in {PlayerName(_activePlayer)}'s base.");
+			return;
+		}
+
+		_pendingPlacementTile = tile;
+		List<Vector2I> remaining = _pendingPlacementCandidates.Where(candidate => candidate != tile).ToList();
+		_overlay.SetPathHighlights(new[] { tile }, remaining);
+		AppendLog($"Selected placement tile {tile}. Press Confirm Placement to spawn.");
+		UpdateStatusText();
+	}
+
+	private void CancelPendingPlacement(string reason = null)
+	{
+		if (!string.IsNullOrWhiteSpace(reason))
+		{
+			AppendLog(reason);
+		}
+
+		_pendingPlacementType = null;
+		_pendingPlacementTile = null;
+		_pendingPlacementCandidates.Clear();
+		_overlay.ClearHighlights();
+		UpdateStatusText();
+	}
+
+	private string BuildPurchasedUnitId(PlayerSide side, UnitType type)
+	{
+		int index = _nextSpawnIndexByPlayer.TryGetValue(side, out int known) ? known : 1;
+		_nextSpawnIndexByPlayer[side] = index + 1;
+
+		string prefix = type == UnitType.Infantry
+			? "INF"
+			: (type == UnitType.Cavalry ? "CAV" : "ARC");
+
+		return $"P{(int)side}-{prefix}-{index:00}";
+	}
+
+	private FacingDirection GetDefaultFacing(PlayerSide side)
+	{
+		switch (side)
+		{
+			case PlayerSide.One:
+				return FacingDirection.South;
+			case PlayerSide.Two:
+				return FacingDirection.West;
+			case PlayerSide.Three:
+				return FacingDirection.North;
+			case PlayerSide.Four:
+				return FacingDirection.East;
+			default:
+				return FacingDirection.South;
 		}
 	}
 
@@ -598,6 +906,8 @@ public partial class BoardGame : Node2D
 	{
 		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
 		string selectionLabel = string.IsNullOrWhiteSpace(_selectedUnitId) ? "none" : _selectedUnitId;
+		int unitPoints = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
+		int aliveUnits = _controller.Board.CountAliveUnits(_activePlayer);
 
 		string pathInfo = "";
 		if (_activePath != null)
@@ -607,7 +917,50 @@ public partial class BoardGame : Node2D
 			pathInfo = $" | Path steps: {steps} | Next options: {frontier}";
 		}
 
-		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Selected: {selectionLabel}{pathInfo} | Queued Moves: {selection.Moves.Count} | Locked: {_lockedPlayers.Count}/4";
+		string placementInfo = "";
+		if (_pendingPlacementType.HasValue)
+		{
+			string tileLabel = _pendingPlacementTile.HasValue ? _pendingPlacementTile.Value.ToString() : "none";
+			placementInfo = $" | Placement: {_pendingPlacementType.Value} @ {tileLabel}";
+		}
+
+		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Units: {aliveUnits} | UnitPts: {unitPoints} | Selected: {selectionLabel}{pathInfo}{placementInfo} | Queued Moves: {selection.Moves.Count} | Locked: {_lockedPlayers.Count}/4";
+		UpdatePurchasePanel();
+	}
+
+	private void UpdatePurchasePanel()
+	{
+		if (_purchaseLabel == null || _buyInfantryButton == null || _buyArcherButton == null || _buyCavalryButton == null)
+		{
+			return;
+		}
+
+		int points = _unitPointsByPlayer.TryGetValue(_activePlayer, out int known) ? known : 0;
+		bool canPurchase = !_lockedPlayers.Contains(_activePlayer);
+		bool isPlacementPending = _pendingPlacementType.HasValue;
+		int infantryCost = UnitPointSystem.GetUnitCost(UnitType.Infantry);
+		int archerCost = UnitPointSystem.GetUnitCost(UnitType.Archer);
+		int cavalryCost = UnitPointSystem.GetUnitCost(UnitType.Cavalry);
+
+		if (isPlacementPending)
+		{
+			string selectedTile = _pendingPlacementTile.HasValue ? _pendingPlacementTile.Value.ToString() : "none";
+			_purchaseLabel.Text = $"Place {_pendingPlacementType.Value}: selected tile {selectedTile} | points {points}";
+		}
+		else
+		{
+			_purchaseLabel.Text = $"Purchase: {PlayerName(_activePlayer)} has {points} point(s)";
+		}
+
+		_buyInfantryButton.Text = $"Buy Infantry ({infantryCost})";
+		_buyArcherButton.Text = $"Buy Archer ({archerCost})";
+		_buyCavalryButton.Text = $"Buy Cavalry ({cavalryCost})";
+
+		_buyInfantryButton.Disabled = !canPurchase || points < infantryCost;
+		_buyArcherButton.Disabled = !canPurchase || points < archerCost;
+		_buyCavalryButton.Disabled = !canPurchase || points < cavalryCost;
+
+		_confirmPlacementButton.Disabled = !isPlacementPending || !_pendingPlacementTile.HasValue || !canPurchase;
 	}
 
 	private void AppendLog(string message)

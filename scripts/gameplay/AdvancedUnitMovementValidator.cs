@@ -44,8 +44,7 @@ public sealed class AdvancedUnitMovementValidator
 			return reachable;
 		}
 
-		int costPerTile = MovementPointSystem.GetMovementCostPerTile(unit.Stats.Type);
-		int maxTiles = (costPerTile > 0) ? MovementPointSystem.TotalMovementPointsPerTurn / costPerTile : 0;
+		int maxTiles = MovementPointSystem.GetMaxTilesPerTurn(unit.Stats.Type);
 
 		Queue<(Vector2I coord, int tilesUsed)> frontier = new Queue<(Vector2I coord, int tilesUsed)>();
 		Dictionary<Vector2I, int> bestCost = new Dictionary<Vector2I, int>();

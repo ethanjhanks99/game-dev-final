@@ -43,8 +43,32 @@ theme_override_font_sizes/font_size = 20
 
 [node name="HelpLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox"]
 layout_mode = 2
-text = "Left click: select unit / extend path / backtrack | Right click: cancel path\nEnd Player Turn (Enter): lock in | Timer expires: turn auto-skipped"
+text = "Left click: select unit / extend path / backtrack | Right click: cancel path or placement\nBuy unit type, click a home-base tile, then Confirm Placement"
 autowrap_mode = 3
+
+[node name="PurchaseLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox"]
+layout_mode = 2
+text = "Purchase:"
+
+[node name="PurchaseButtons" type="HBoxContainer" parent="CanvasLayer/UI/Margin/VBox"]
+layout_mode = 2
+
+[node name="BuyInfantryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+layout_mode = 2
+text = "Buy Infantry (1)"
+
+[node name="BuyArcherButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+layout_mode = 2
+text = "Buy Archer (2)"
+
+[node name="BuyCavalryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+layout_mode = 2
+text = "Buy Cavalry (3)"
+
+[node name="ConfirmPlacementButton" type="Button" parent="CanvasLayer/UI/Margin/VBox"]
+layout_mode = 2
+text = "Confirm Placement"
+disabled = true
 
 [node name="EndTurnButton" type="Button" parent="CanvasLayer/UI/Margin/VBox"]
 layout_mode = 2

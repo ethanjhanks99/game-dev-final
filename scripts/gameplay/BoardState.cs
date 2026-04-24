@@ -163,6 +163,8 @@ public sealed class BoardState
 			return reachable;
 		}
 
+		int maxTiles = MovementPointSystem.GetMaxTilesPerTurn(unit.Stats.Type);
+
 		Queue<(Vector2I coord, int cost)> frontier = new Queue<(Vector2I coord, int cost)>();
 		Dictionary<Vector2I, int> bestCost = new Dictionary<Vector2I, int>();
 
@@ -178,7 +180,7 @@ public sealed class BoardState
 				Vector2I next = coord + dir;
 				int nextCost = cost + 1;
 
-				if (nextCost > unit.Stats.MovementRange || !GridTypes.IsInBounds(next))
+				if (nextCost > maxTiles || !GridTypes.IsInBounds(next))
 				{
 					continue;
 				}

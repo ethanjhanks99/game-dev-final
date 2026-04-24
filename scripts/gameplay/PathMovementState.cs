@@ -93,7 +93,11 @@ public sealed class PathMovementState
 			// Cannot step onto an occupied tile (other units block passage).
 			if (_boardOccupancy.ContainsKey(candidate) && _boardOccupancy[candidate] != _unit.Id)
 			{
-				continue;
+				bool isMeleeUnit = _unit.Stats.Type == UnitType.Cavalry || _unit.Stats.Type == UnitType.Infantry;
+				if (!isMeleeUnit)
+				{
+					continue;
+				}
 			}
 
 			frontier.Add(candidate);
