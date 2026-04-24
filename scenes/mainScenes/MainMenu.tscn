@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://clpg2xasfwawy"]
 
 [ext_resource type="Script" uid="uid://c60w0n166f4ok" path="res://scripts/mainScenes/MainMenu.cs" id="1_s04vg"]
+[ext_resource type="AudioStream" uid="uid://dq0pnqxiyal3f" path="res://assets/audio/HoliznaCC0 - Righteous Sword.mp3" id="2_1flp3"]
 
 [node name="MainMenu" type="Control" unique_id=2065307128]
 layout_mode = 3
@@ -45,3 +46,7 @@ text = "Join Lobby"
 [node name="Quit" type="Button" parent="CenterContainer/VBoxContainer" unique_id=194860415]
 layout_mode = 2
 text = "Quit"
+
+[node name="MusicPlayer" type="AudioStreamPlayer2D" parent="." unique_id=1819141860]
+stream = ExtResource("2_1flp3")
+autoplay = true

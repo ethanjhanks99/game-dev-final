@@ -86,6 +86,24 @@ public static class GridTypes
 		return inNorthField || inSouthField || inWestField || inEastField;
 	}
 
+	public static bool IsBorderTile(Vector2I coord)
+	{
+		bool borderNorthField = (coord.X >= CoreMinX-1 && coord.X <= CoreMaxX + 1 && coord.Y == MinY - 1) || 
+			(coord.X == CoreMinX-1 && coord.Y >= MinY && coord.Y < CoreMinY) ||
+			(coord.X == CoreMaxX+1 && coord.Y >= MinY && coord.Y < CoreMinY);
+		bool borderSouthField = coord.X >= CoreMinX-1 && coord.X <= CoreMaxX + 1 && coord.Y == MaxY + 1||
+			(coord.X == CoreMinX-1 && coord.Y <= MaxY && coord.Y > CoreMaxY) ||
+			(coord.X == CoreMaxX+1 && coord.Y <= MaxY && coord.Y > CoreMaxY);;
+		bool borderWestField = coord.X == MinX -1 && coord.Y >= CoreMinY-1 && coord.Y <= CoreMaxY+1||
+			(coord.X >= MinX && coord.X < CoreMinX && coord.Y == CoreMinY - 1)||
+			(coord.X >= MinX && coord.X < CoreMinX && coord.Y == CoreMaxY + 1);
+		bool borderEastField = coord.X == MaxX + 1 && coord.Y >= CoreMinY-1 && coord.Y <= CoreMaxY+1||
+			(coord.X <= MaxX && coord.X > CoreMaxX && coord.Y == CoreMinY - 1)||
+			(coord.X <= MaxX && coord.X > CoreMaxX && coord.Y == CoreMaxY + 1);
+
+		return borderNorthField || borderSouthField || borderWestField || borderEastField;
+	}
+
 	public static PlayerSide GetFieldOwner(Vector2I coord)
 	{
 		if (!IsPlayableTile(coord))
@@ -124,6 +142,21 @@ public static class GridTypes
 			{
 				Vector2I coord = new Vector2I(x, y);
 				if (IsPlayableTile(coord))
+				{
+					yield return coord;
+				}
+			}
+		}
+	}
+
+	public static IEnumerable<Vector2I> GetAllBorderTiles()
+	{
+		for (int y = MinY - 1; y <= MaxY + 1; y++)
+		{
+			for (int x = MinX -1; x <= MaxX + 1; x++)
+			{
+				Vector2I coord = new Vector2I(x, y);
+				if (IsBorderTile(coord))
 				{
 					yield return coord;
 				}

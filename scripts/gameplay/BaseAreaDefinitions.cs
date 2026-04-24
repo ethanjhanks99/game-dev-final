@@ -5,8 +5,8 @@ using System.Linq;
 
 public static class BaseAreaDefinitions
 {
-	public const int BaseWidth = 3;
-	public const int BaseHeight = 4;
+	public const int BaseWidth = 4;
+	public const int BaseHeight = 3;
 
 	public static IReadOnlyDictionary<PlayerSide, HashSet<Vector2I>> BuildBaseAreas()
 	{
@@ -23,7 +23,7 @@ public static class BaseAreaDefinitions
 	private static HashSet<Vector2I> CreateNorthBaseArea()
 	{
 		HashSet<Vector2I> tiles = new HashSet<Vector2I>();
-		int centerX = 3;
+		int centerX = 2;
 		int centerY = GridTypes.MinY;
 
 		for (int x = centerX; x < centerX + BaseWidth; x++)
@@ -44,12 +44,12 @@ public static class BaseAreaDefinitions
 	private static HashSet<Vector2I> CreateEastBaseArea()
 	{
 		HashSet<Vector2I> tiles = new HashSet<Vector2I>();
-		int centerX = GridTypes.MaxX - BaseWidth + 1;
-		int centerY = 3;
+		int centerX = GridTypes.MaxX - BaseHeight + 1;
+		int centerY = 2;
 
 		for (int x = centerX; x <= GridTypes.MaxX; x++)
 		{
-			for (int y = centerY; y < centerY + BaseHeight; y++)
+			for (int y = centerY; y < centerY + BaseWidth; y++)
 			{
 				Vector2I tile = new Vector2I(x, y);
 				if (GridTypes.IsPlayableTile(tile))
@@ -65,7 +65,7 @@ public static class BaseAreaDefinitions
 	private static HashSet<Vector2I> CreateSouthBaseArea()
 	{
 		HashSet<Vector2I> tiles = new HashSet<Vector2I>();
-		int centerX = 4;
+		int centerX = 2;
 		int centerY = GridTypes.MaxY - BaseHeight + 1;
 
 		for (int x = centerX; x < centerX + BaseWidth; x++)
@@ -87,11 +87,11 @@ public static class BaseAreaDefinitions
 	{
 		HashSet<Vector2I> tiles = new HashSet<Vector2I>();
 		int centerX = GridTypes.MinX;
-		int centerY = 4;
+		int centerY = 2;
 
-		for (int x = centerX; x < centerX + BaseWidth; x++)
+		for (int x = centerX; x < centerX + BaseHeight; x++)
 		{
-			for (int y = centerY; y < centerY + BaseHeight; y++)
+			for (int y = centerY; y < centerY + BaseWidth; y++)
 			{
 				Vector2I tile = new Vector2I(x, y);
 				if (GridTypes.IsPlayableTile(tile))
