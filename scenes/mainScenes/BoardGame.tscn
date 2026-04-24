@@ -4,6 +4,7 @@
 [ext_resource type="Script" uid="uid://bhtq8ui0u3evb" path="res://scripts/gameplay/GridCombatController.cs" id="2"]
 [ext_resource type="Script" uid="uid://bmg6kebhsijad" path="res://scripts/gameplay/visual/MoveHighlightOverlay.cs" id="3"]
 [ext_resource type="AudioStream" uid="uid://ddgvl6gi3fvlj" path="res://assets/audio/HoliznaCC0 - Quickly!.mp3" id="4_n1ox5"]
+[ext_resource type="Script" uid="uid://dpy3ek7ukm3x8" path="res://scripts/Camera.cs" id="5_kq6om"]
 
 [node name="BoardGame" type="Node2D" unique_id=852526929]
 script = ExtResource("1")
@@ -44,34 +45,35 @@ text = "Time: 30s"
 
 [node name="HelpLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox" unique_id=1948373711]
 layout_mode = 2
-text = "Left click: select unit / extend path / backtrack | Right click: cancel path or placement\nBuy unit type, click a home-base tile, then Confirm Placement"
+text = "Left click: select unit / extend path / backtrack | Right click: cancel path or placement
+Buy unit type, click a home-base tile, then Confirm Placement"
 autowrap_mode = 3
 
-[node name="PurchaseLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox"]
+[node name="PurchaseLabel" type="Label" parent="CanvasLayer/UI/Margin/VBox" unique_id=1319999091]
 layout_mode = 2
 text = "Purchase:"
 
-[node name="PurchaseButtons" type="HBoxContainer" parent="CanvasLayer/UI/Margin/VBox"]
+[node name="PurchaseButtons" type="HBoxContainer" parent="CanvasLayer/UI/Margin/VBox" unique_id=1646398978]
 layout_mode = 2
 
-[node name="BuyInfantryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+[node name="BuyInfantryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons" unique_id=548643540]
 layout_mode = 2
 text = "Buy Infantry (1)"
 
-[node name="BuyArcherButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+[node name="BuyArcherButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons" unique_id=104353029]
 layout_mode = 2
 text = "Buy Archer (2)"
 
-[node name="BuyCavalryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons"]
+[node name="BuyCavalryButton" type="Button" parent="CanvasLayer/UI/Margin/VBox/PurchaseButtons" unique_id=1764706345]
 layout_mode = 2
 text = "Buy Cavalry (3)"
 
-[node name="ConfirmPlacementButton" type="Button" parent="CanvasLayer/UI/Margin/VBox"]
+[node name="ConfirmPlacementButton" type="Button" parent="CanvasLayer/UI/Margin/VBox" unique_id=877703326]
 layout_mode = 2
-text = "Confirm Placement"
 disabled = true
+text = "Confirm Placement"
 
-[node name="EndTurnButton" type="Button" parent="CanvasLayer/UI/Margin/VBox"]
+[node name="EndTurnButton" type="Button" parent="CanvasLayer/UI/Margin/VBox" unique_id=335753008]
 layout_mode = 2
 text = "End Player Turn (Enter)"
 
@@ -92,3 +94,7 @@ scroll_following = true
 [node name="MusicPlayer" type="AudioStreamPlayer2D" parent="." unique_id=1300906099]
 stream = ExtResource("4_n1ox5")
 autoplay = true
+
+[node name="Camera" type="Camera2D" parent="." unique_id=37846013]
+position = Vector2(576, 324)
+script = ExtResource("5_kq6om")

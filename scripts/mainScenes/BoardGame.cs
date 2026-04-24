@@ -127,7 +127,9 @@ public partial class BoardGame : Node2D
 	{
 		if (@event is InputEventMouseButton mouseButton && mouseButton.Pressed)
 		{
-			Vector2I tile = ScreenToTile(mouseButton.Position);
+			// We use GetGlobalMousePosition() instead of mouseButton.Position to account
+			// for movement and zoom with the camera
+			Vector2I tile = ScreenToTile(GetGlobalMousePosition());
 			if (!GridTypes.IsPlayableTile(tile))
 			{
 				return;
@@ -283,9 +285,9 @@ public partial class BoardGame : Node2D
 				DrawArc(center, TilePixelSize * 0.4f, 0f, Mathf.Tau, 24, new Color(1f, 1f, 1f), 2f);
 			}
 
-			Vector2I facing = GridTypes.FacingToVector(unit.Facing);
-			Vector2 facingVector = new Vector2(facing.X, facing.Y) * (TilePixelSize * 0.22f);
-			DrawLine(center, center + facingVector, new Color(0.05f, 0.05f, 0.05f), 2f);
+			//Vector2I facing = GridTypes.FacingToVector(unit.Facing);
+			//Vector2 facingVector = new Vector2(facing.X, facing.Y) * (TilePixelSize * 0.22f);
+			//DrawLine(center, center + facingVector, new Color(0.05f, 0.05f, 0.05f), 2f);
 
 			DrawUnitHealthBar(unit, rect);
 		}
