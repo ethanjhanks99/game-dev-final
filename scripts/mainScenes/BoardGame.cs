@@ -25,6 +25,17 @@ public partial class BoardGame : Node2D
 	// Grass tile extracted from the top-left 32x32 region of Tileset.png.
 	private Texture2D _grassTexture;
 	private static readonly Rect2 GrassSrcRegion = new Rect2(0, 0, 32, 32);
+	private static readonly Rect2 MtnSrcRegion = new Rect2(32, 0, 32, 32);
+	// Palace tiles extracted from Palace.png
+	private Texture2D _palaceTexture;
+	private static readonly Rect2[] PalaceSrcRegion = {new Rect2(0, 0, 128, 96), new Rect2(96, 128, 96, 128), 
+		new Rect2(128, 0, 128, 96), new Rect2(96, 0, 96, 128)};
+
+
+
+	private Texture2D _infantryTexture;
+	private Texture2D _archerTexture;
+	private Texture2D _calvaryTexture;
 
 	private readonly HashSet<PlayerSide> _lockedPlayers = new HashSet<PlayerSide>();
 	private readonly Dictionary<PlayerSide, PlayerTurnSelection> _pendingSelections = new Dictionary<PlayerSide, PlayerTurnSelection>();
@@ -74,7 +85,12 @@ public partial class BoardGame : Node2D
 		_overlay.Position = _boardOrigin;
 
 		// Load the tileset and cut out just the base grass tile from the top-left corner.
-		_grassTexture = GD.Load<Texture2D>("res://assets/textures/Tileset.png");
+		_grassTexture = GD.Load<Texture2D>("res://assets/textures/Tiles/Tileset.png");
+		_palaceTexture = GD.Load<Texture2D>("res://assets/textures/Tiles/Palace.png");
+
+		_infantryTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteInfantry.png");
+		_archerTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteArcher.png");
+		_calvaryTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteKnight.png");
 
 		ResetTurnPlanning();
 		InitializeUnitEconomy();
@@ -178,15 +194,89 @@ public partial class BoardGame : Node2D
 
 			DrawRect(rect, new Color(0.12f, 0.12f, 0.12f, 0.5f), false, 1.0f);
 		}
+		foreach (Vector2I tile in GridTypes.GetAllBorderTiles())
+		{
+			Rect2 rect = new Rect2(TileToScreen(tile), new Vector2(TilePixelSize, TilePixelSize));
+
+			// Draw the base grass texture stretched to tile size.
+			if (_grassTexture != null)
+			{
+				DrawTextureRectRegion(_grassTexture, rect, MtnSrcRegion);
+			}
+			else
+			{
+				DrawRect(rect, new Color(0.4f, 0.4f, 0.4f), true);
+			}
+		}
+		Rect2 palaceRect = new Rect2(TileToScreen(new Vector2I(2, -6)), new Vector2(TilePixelSize * 4, TilePixelSize * 3));
+		DrawTextureRectRegion(_palaceTexture, palaceRect, PalaceSrcRegion[0]);
+		Image image = _palaceTexture.GetImage();
+		for (int i = 0; i < 3; i++)
+		{
+        	image.Rotate90(ClockDirection.Clockwise);
+        	Texture2D rotatedTexture = ImageTexture.CreateFromImage(image);
+
+			switch(i)
+			{
+				case 0:
+					palaceRect = new Rect2(TileToScreen(new Vector2I(11, 2)), new Vector2(TilePixelSize * 3, TilePixelSize * 4));
+					break;
+				case 1:
+					palaceRect = new Rect2(TileToScreen(new Vector2I(2, 11)), new Vector2(TilePixelSize * 4, TilePixelSize * 3));
+					break;
+				case 2:
+					palaceRect = new Rect2(TileToScreen(new Vector2I(-6, 2)), new Vector2(TilePixelSize * 3, TilePixelSize * 4));
+					break;
+				default:
+					break;
+			}
+			DrawTextureRectRegion(rotatedTexture, palaceRect, PalaceSrcRegion[1 + i]);
+		}
+		
+
+		
+		//GD.Print(new Rect2(PalaceSrcRegion.Position.X + 128, PalaceSrcRegion.Position.Y, 128, 96));
 	}
 
 	private void DrawUnits()
 	{
 		foreach (BoardUnit unit in _controller.Board.Units)
 		{
+			PlayerSide player = unit.Owner;
+			Rect2 spriteLoc;
+			switch (player)
+			{
+				case PlayerSide.One:
+					spriteLoc = new Rect2(0,0,32,32);
+					break;
+				case PlayerSide.Two:
+					spriteLoc = new Rect2(32,32,32,32);
+					break;
+				case PlayerSide.Three:
+					spriteLoc = new Rect2(64,64,32,32);
+					break;
+				case PlayerSide.Four:
+					spriteLoc = new Rect2(96,96,32,32);
+					break;
+				default:
+					spriteLoc = new Rect2(0,0,32,32);
+					break;
+			}
+			Rect2 rect = new Rect2(TileToScreen(unit.Position), new Vector2(TilePixelSize, TilePixelSize));
+			if (unit is InfantryUnit)
+			{
+				DrawTextureRectRegion(_infantryTexture, rect, spriteLoc);
+			} else if (unit is ArcherUnit)
+			{
+				DrawTextureRectRegion(_archerTexture, rect, spriteLoc);
+			} else if (unit is CavalryUnit)
+			{
+				DrawTextureRectRegion(_calvaryTexture, rect, spriteLoc);
+			}
+
 			Vector2 center = TileToScreen(unit.Position) + new Vector2(TilePixelSize * 0.5f, TilePixelSize * 0.5f);
-			Color unitColor = GetPlayerColor(unit.Owner);
-			DrawCircle(center, TilePixelSize * 0.32f, unitColor);
+			//Color unitColor = GetPlayerColor(unit.Owner);
+			//DrawCircle(center, TilePixelSize * 0.32f, unitColor);
 
 			if (unit.Id == _selectedUnitId)
 			{

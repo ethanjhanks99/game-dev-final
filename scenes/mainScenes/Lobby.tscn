@@ -1,8 +1,9 @@
-[gd_scene load_steps=2 format=3 uid="uid://brbk2vpq23w8p"]
+[gd_scene format=3 uid="uid://brbk2vpq23w8p"]
 
 [ext_resource type="Script" uid="uid://c7ko1kf1omorj" path="res://scripts/mainScenes/Lobby.cs" id="1_0gast"]
+[ext_resource type="AudioStream" uid="uid://dq0pnqxiyal3f" path="res://assets/audio/HoliznaCC0 - Righteous Sword.mp3" id="2_4prm8"]
 
-[node name="Lobby" type="Control"]
+[node name="Lobby" type="Control" unique_id=1945687679]
 layout_mode = 3
 anchors_preset = 8
 anchor_left = 0.5
@@ -13,7 +14,7 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_0gast")
 
-[node name="CenterContainer" type="CenterContainer" parent="."]
+[node name="CenterContainer" type="CenterContainer" parent="." unique_id=1893794708]
 layout_mode = 1
 anchors_preset = 8
 anchor_left = 0.5
@@ -27,13 +28,17 @@ offset_bottom = 33.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="VBoxContainer" type="VBoxContainer" parent="CenterContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="CenterContainer" unique_id=379423747]
 layout_mode = 2
 
-[node name="StartGame" type="Button" parent="CenterContainer/VBoxContainer"]
+[node name="StartGame" type="Button" parent="CenterContainer/VBoxContainer" unique_id=117582828]
 layout_mode = 2
 text = "Start Game"
 
-[node name="MainMenu" type="Button" parent="CenterContainer/VBoxContainer"]
+[node name="MainMenu" type="Button" parent="CenterContainer/VBoxContainer" unique_id=1369518069]
 layout_mode = 2
 text = "Main Menu"
+
+[node name="Music" type="AudioStreamPlayer2D" parent="." unique_id=1375360278]
+stream = ExtResource("2_4prm8")
+autoplay = true
