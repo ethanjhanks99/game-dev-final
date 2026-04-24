@@ -4,7 +4,8 @@ using System.Collections.Generic;
 
 public static class MovementPointSystem
 {
-	public const int TotalMovementPointsPerTurn = 6;
+	public const int TotalMovementPointsPerTurn = 12;
+	public const int ArcherAttackCost = 4;
 
 	public static int GetMovementCostPerTile(UnitType type)
 	{
@@ -21,19 +22,37 @@ public static class MovementPointSystem
 		}
 	}
 
+	public static int GetAttackCost(UnitType type)
+	{
+		switch (type)
+		{
+			case UnitType.Archer:
+				return ArcherAttackCost;
+			default:
+				return 0;
+		}
+	}
+
 	public static int GetMaxTilesBeforeFatigue(UnitType type)
 	{
 		switch (type)
 		{
 			case UnitType.Infantry:
-				return 2;
+				return 1;
 			case UnitType.Cavalry:
-				return 5;
+				return 3;
 			case UnitType.Archer:
-				return 2;
+				return 1;
 			default:
-				return 2;
+				return 1;
 		}
+	}
+
+	public static int GetMaxTilesPerTurn(UnitType type)
+	{
+		int byMovementPoints = CalculateReachableTilesWithPointLimit(type);
+		int byFatigue = GetMaxTilesBeforeFatigue(type);
+		return Math.Min(byMovementPoints, byFatigue);
 	}
 
 	public static float GetFatigueAttackPenalty(UnitType type)

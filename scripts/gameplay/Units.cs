@@ -15,6 +15,7 @@ public sealed class UnitStats
 	public UnitType Type { get; }
 	public int MaxHealth { get; }
 	public int Attack { get; }
+	public int Power => Attack;
 	public int Defense { get; }
 	public int MovementRange { get; }
 	public int AttackRange { get; }
@@ -82,9 +83,9 @@ public sealed class ArcherUnit : BoardUnit
 public static class UnitCatalog
 {
 	// Balance values are defaults and should be tuned with playtests.
-	public static readonly UnitStats Infantry = new UnitStats(UnitType.Infantry, maxHealth: 12, attack: 4, defense: 3, movementRange: 2, attackRange: 1);
-	public static readonly UnitStats Cavalry = new UnitStats(UnitType.Cavalry, maxHealth: 10, attack: 5, defense: 2, movementRange: 3, attackRange: 1);
-	public static readonly UnitStats Archer = new UnitStats(UnitType.Archer, maxHealth: 8, attack: 4, defense: 1, movementRange: 2, attackRange: 3);
+	public static readonly UnitStats Infantry = new UnitStats(UnitType.Infantry, maxHealth: 6, attack: 3, defense: 3, movementRange: 1, attackRange: 1);
+	public static readonly UnitStats Cavalry = new UnitStats(UnitType.Cavalry, maxHealth: 4, attack: 4, defense: 2, movementRange: 3, attackRange: 1);
+	public static readonly UnitStats Archer = new UnitStats(UnitType.Archer, maxHealth: 5, attack: 3, defense: 1, movementRange: 1, attackRange: 3);
 
 	public static BoardUnit CreateUnit(UnitType type, string id, PlayerSide owner, Vector2I position, FacingDirection facing)
 	{
