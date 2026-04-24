@@ -8,6 +8,9 @@ public static class TurnResolver
 	public static TurnResolutionReport ResolveSimultaneousTurn(BoardState board, IEnumerable<PlayerTurnSelection> selections)
 	{
 		TurnResolutionReport report = new TurnResolutionReport();
+		Dictionary<string, AttackSnapshot> attackSnapshots = board.Units.ToDictionary(
+			unit => unit.Id,
+			unit => new AttackSnapshot(unit.Owner, unit.Stats.Type, unit.Position));
 		Dictionary<string, MoveOrder> allMoves = new Dictionary<string, MoveOrder>();
 		List<AttackOrder> allAttacks = new List<AttackOrder>();
 
@@ -25,15 +28,15 @@ public static class TurnResolver
 		}
 
 		HashSet<string> movedUnits = ApplySimultaneousMoves(board, allMoves, report);
-		ApplySimultaneousAttacks(board, allAttacks, movedUnits, report);
+		ResolveMeleeConflicts(board, report);
+		ApplySimultaneousAttacks(board, allAttacks, movedUnits, attackSnapshots, report);
 		RemoveDeadUnits(board, report);
 		return report;
 	}
 
 	private static HashSet<string> ApplySimultaneousMoves(BoardState board, Dictionary<string, MoveOrder> allMoves, TurnResolutionReport report)
 	{
-		Dictionary<string, Vector2I> startPositions = board.Units.ToDictionary(unit => unit.Id, unit => unit.Position);
-		Dictionary<Vector2I, List<string>> destinationClaims = new Dictionary<Vector2I, List<string>>();
+		Dictionary<Vector2I, Dictionary<PlayerSide, List<string>>> destinationClaimsByOwner = new Dictionary<Vector2I, Dictionary<PlayerSide, List<string>>>();
 		HashSet<string> invalidMoves = new HashSet<string>();
 		HashSet<string> movedUnits = new HashSet<string>();
 
@@ -48,65 +51,40 @@ public static class TurnResolver
 
 			if (!board.CanMoveUnit(move.UnitId, move.Destination, out string reason))
 			{
-				if (reason == "Target tile is occupied." && TryResolveMeleeContact(board, unit, move, report))
-				{
-					invalidMoves.Add(move.UnitId);
-					continue;
-				}
-
 				report.MoveResults.Add(new UnitMoveResolution(move.UnitId, unit.Position, move.Destination, false, reason));
 				invalidMoves.Add(move.UnitId);
 				continue;
 			}
 
-			if (!destinationClaims.TryGetValue(move.Destination, out List<string> claimants))
+			if (!destinationClaimsByOwner.TryGetValue(move.Destination, out Dictionary<PlayerSide, List<string>> claimsByOwner))
+			{
+				claimsByOwner = new Dictionary<PlayerSide, List<string>>();
+				destinationClaimsByOwner[move.Destination] = claimsByOwner;
+			}
+
+			if (!claimsByOwner.TryGetValue(unit.Owner, out List<string> claimants))
 			{
 				claimants = new List<string>();
-				destinationClaims[move.Destination] = claimants;
+				claimsByOwner[unit.Owner] = claimants;
 			}
 
 			claimants.Add(move.UnitId);
 		}
 
-		HashSet<string> blockedByConflict = new HashSet<string>();
-		foreach (KeyValuePair<Vector2I, List<string>> entry in destinationClaims)
+		HashSet<string> blockedByFriendlyConflict = new HashSet<string>();
+		foreach (KeyValuePair<Vector2I, Dictionary<PlayerSide, List<string>>> entry in destinationClaimsByOwner)
 		{
-			if (entry.Value.Count > 1)
+			foreach (KeyValuePair<PlayerSide, List<string>> claims in entry.Value)
 			{
-				foreach (string unitId in entry.Value)
+				if (claims.Value.Count <= 1)
 				{
-					blockedByConflict.Add(unitId);
+					continue;
 				}
-			}
-		}
 
-		HashSet<string> blockedBySwap = new HashSet<string>();
-		foreach (MoveOrder move in allMoves.Values)
-		{
-			if (invalidMoves.Contains(move.UnitId) || blockedByConflict.Contains(move.UnitId))
-			{
-				continue;
-			}
-
-			if (!startPositions.TryGetValue(move.UnitId, out Vector2I moverStart))
-			{
-				continue;
-			}
-
-			if (!board.TryGetUnitAt(move.Destination, out BoardUnit occupant))
-			{
-				continue;
-			}
-
-			if (!allMoves.TryGetValue(occupant.Id, out MoveOrder occupantMove))
-			{
-				continue;
-			}
-
-			if (occupantMove.Destination == moverStart)
-			{
-				blockedBySwap.Add(move.UnitId);
-				blockedBySwap.Add(occupant.Id);
+				foreach (string unitId in claims.Value)
+				{
+					blockedByFriendlyConflict.Add(unitId);
+				}
 			}
 		}
 
@@ -122,31 +100,10 @@ public static class TurnResolver
 				continue;
 			}
 
-			if (blockedByConflict.Contains(move.UnitId))
+			if (blockedByFriendlyConflict.Contains(move.UnitId))
 			{
-				report.MoveResults.Add(new UnitMoveResolution(unit.Id, unit.Position, move.Destination, false, "Movement conflict: multiple units selected the same tile."));
+				report.MoveResults.Add(new UnitMoveResolution(unit.Id, unit.Position, move.Destination, false, "Movement conflict: multiple friendly units selected the same tile."));
 				continue;
-			}
-
-			if (blockedBySwap.Contains(move.UnitId))
-			{
-				report.MoveResults.Add(new UnitMoveResolution(unit.Id, unit.Position, move.Destination, false, "Movement conflict: direct swap is blocked."));
-				continue;
-			}
-
-			// A destination can only be entered if the current occupant is leaving successfully.
-			if (board.TryGetUnitAt(move.Destination, out BoardUnit occupant))
-			{
-				bool occupantLeaves = allMoves.TryGetValue(occupant.Id, out MoveOrder occupantMove)
-					&& !invalidMoves.Contains(occupant.Id)
-					&& !blockedByConflict.Contains(occupant.Id)
-					&& !blockedBySwap.Contains(occupant.Id);
-
-				if (!occupantLeaves)
-				{
-					report.MoveResults.Add(new UnitMoveResolution(unit.Id, unit.Position, move.Destination, false, "Destination remained occupied."));
-					continue;
-				}
 			}
 
 			Vector2I start = unit.Position;
@@ -164,33 +121,144 @@ public static class TurnResolver
 		return movedUnits;
 	}
 
-	private static void ApplySimultaneousAttacks(BoardState board, List<AttackOrder> allAttacks, ISet<string> movedUnits, TurnResolutionReport report)
+	private static void ResolveMeleeConflicts(BoardState board, TurnResolutionReport report)
 	{
-		Dictionary<string, int> incomingDamage = new Dictionary<string, int>();
+		List<Vector2I> occupiedTiles = board.GetOccupiedTiles().ToList();
+		foreach (Vector2I tile in occupiedTiles)
+		{
+			if (!board.TryGetUnitsAt(tile, out List<BoardUnit> unitsAtTile))
+			{
+				continue;
+			}
+
+			List<BoardUnit> contenders = unitsAtTile.Where(unit => unit.IsAlive).ToList();
+			if (contenders.Count < 2)
+			{
+				continue;
+			}
+
+			if (contenders.Select(unit => unit.Owner).Distinct().Count() < 2)
+			{
+				continue;
+			}
+
+			while (contenders.Count > 1)
+			{
+				contenders = contenders
+					.Where(unit => unit.IsAlive)
+					.OrderByDescending(unit => unit.CurrentHealth)
+					.ThenByDescending(unit => unit.Stats.Attack)
+					.ThenBy(unit => unit.Id)
+					.ToList();
+
+				if (contenders.Count < 2)
+				{
+					break;
+				}
+
+				if (contenders.Select(unit => unit.Owner).Distinct().Count() < 2)
+				{
+					break;
+				}
+
+				BoardUnit left = contenders[0];
+				BoardUnit right = contenders[1];
+				ResolveMeleeDuel(left, right, report);
+			}
+		}
+	}
+
+	private static void ResolveMeleeDuel(BoardUnit left, BoardUnit right, TurnResolutionReport report)
+	{
+		bool leftArcher = left.Stats.Type == UnitType.Archer;
+		bool rightArcher = right.Stats.Type == UnitType.Archer;
+
+		if (leftArcher && rightArcher)
+		{
+			left.SetCurrentHealth(0f);
+			right.SetCurrentHealth(0f);
+			report.AttackResults.Add(new UnitAttackResolution(left.Id, right.Id, 0, true, "Melee tie: both archers were eliminated."));
+			report.AttackResults.Add(new UnitAttackResolution(right.Id, left.Id, 0, true, "Melee tie: both archers were eliminated."));
+			return;
+		}
+
+		if (leftArcher || rightArcher)
+		{
+			BoardUnit archer = leftArcher ? left : right;
+			BoardUnit winner = leftArcher ? right : left;
+			archer.SetCurrentHealth(0f);
+			report.AttackResults.Add(new UnitAttackResolution(winner.Id, archer.Id, 0, true, "Archer lost melee instantly."));
+			return;
+		}
+
+		if (Mathf.IsEqualApprox(left.CurrentHealth, right.CurrentHealth))
+		{
+			if (left.Stats.Attack == right.Stats.Attack)
+			{
+				left.SetCurrentHealth(0f);
+				right.SetCurrentHealth(0f);
+				report.AttackResults.Add(new UnitAttackResolution(left.Id, right.Id, 0, true, "Melee tie: equal health and power, both units eliminated."));
+				report.AttackResults.Add(new UnitAttackResolution(right.Id, left.Id, 0, true, "Melee tie: equal health and power, both units eliminated."));
+				return;
+			}
+
+			BoardUnit winnerByPower = left.Stats.Attack > right.Stats.Attack ? left : right;
+			BoardUnit loserByPower = winnerByPower == left ? right : left;
+			loserByPower.SetCurrentHealth(0f);
+			winnerByPower.SetCurrentHealth(winnerByPower.CurrentHealth / 2f);
+			report.AttackResults.Add(new UnitAttackResolution(winnerByPower.Id, loserByPower.Id, 0, true, "Melee resolved by higher power; winner health halved."));
+			return;
+		}
+
+		BoardUnit winnerByHealth = left.CurrentHealth > right.CurrentHealth ? left : right;
+		BoardUnit loserByHealth = winnerByHealth == left ? right : left;
+		loserByHealth.SetCurrentHealth(0f);
+		winnerByHealth.SetCurrentHealth(winnerByHealth.CurrentHealth / 2f);
+		report.AttackResults.Add(new UnitAttackResolution(winnerByHealth.Id, loserByHealth.Id, 0, true, "Melee resolved by higher health; winner health halved."));
+	}
+
+	private static void ApplySimultaneousAttacks(BoardState board, List<AttackOrder> allAttacks, ISet<string> movedUnits, IReadOnlyDictionary<string, AttackSnapshot> attackSnapshots, TurnResolutionReport report)
+	{
+		Dictionary<string, float> incomingDamage = new Dictionary<string, float>();
 
 		foreach (AttackOrder attack in allAttacks)
 		{
-			if (!board.TryGetUnit(attack.AttackerUnitId, out BoardUnit attacker) || !attacker.IsAlive)
+			if (!attackSnapshots.TryGetValue(attack.AttackerUnitId, out AttackSnapshot attackerSnapshot))
 			{
 				report.AttackResults.Add(new UnitAttackResolution(attack.AttackerUnitId, attack.TargetUnitId, 0, false, "Attacker is missing or dead."));
 				continue;
 			}
 
-			if (attacker.Stats.Type == UnitType.Archer)
+			if (!board.TryGetUnit(attack.AttackerUnitId, out BoardUnit attacker))
 			{
-				if (movedUnits.Contains(attacker.Id))
-				{
-					report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archers cannot move and attack on the same turn."));
-					continue;
-				}
+				report.AttackResults.Add(new UnitAttackResolution(attack.AttackerUnitId, attack.TargetUnitId, 0, false, "Attacker is missing or dead."));
+				continue;
+			}
 
-				int requiredAttackPoints = MovementPointSystem.GetAttackCost(attacker.Stats.Type);
-				int availableAttackPoints = MovementPointSystem.TotalMovementPointsPerTurn;
-				if (requiredAttackPoints > availableAttackPoints)
-				{
-					report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archer attack failed: insufficient movement points to pay attack cost."));
-					continue;
-				}
+			if (attackerSnapshot.Type != UnitType.Archer)
+			{
+				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Only archers can queue ranged attacks."));
+				continue;
+			}
+
+			if (movedUnits.Contains(attacker.Id))
+			{
+				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archers cannot move and attack on the same turn."));
+				continue;
+			}
+
+			int requiredAttackPoints = MovementPointSystem.GetAttackCost(attacker.Stats.Type);
+			int availableAttackPoints = MovementPointSystem.TotalMovementPointsPerTurn;
+			if (requiredAttackPoints > availableAttackPoints)
+			{
+				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Archer attack failed: insufficient movement points to pay attack cost."));
+				continue;
+			}
+
+			if (!attackSnapshots.TryGetValue(attack.TargetUnitId, out AttackSnapshot targetSnapshot))
+			{
+				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, attack.TargetUnitId, 0, false, "Target is missing or dead."));
+				continue;
 			}
 
 			if (!board.TryGetUnit(attack.TargetUnitId, out BoardUnit target) || !target.IsAlive)
@@ -199,35 +267,35 @@ public static class TurnResolver
 				continue;
 			}
 
-			if (attacker.Owner == target.Owner)
+			if (attackerSnapshot.Owner == targetSnapshot.Owner)
 			{
 				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, 0, false, "Friendly fire is disabled."));
 				continue;
 			}
 
-			int distance = GridTypes.ManhattanDistance(attacker.Position, target.Position);
-			if (distance < 1 || distance > attacker.Stats.AttackRange)
+			// Range is validated from pre-move positions so queued shots still land if either unit moved.
+			int distance = GridTypes.ManhattanDistance(attackerSnapshot.Position, targetSnapshot.Position);
+			if (distance < 1 || distance > 3)
 			{
 				report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, 0, false, "Target out of attack range."));
 				continue;
 			}
 
-			int effectiveDefense = GetDirectionalDefense(target, attacker.Position);
-			int damage = Math.Max(1, attacker.Stats.Attack - effectiveDefense);
+			const float damage = 1f;
 
 			if (!incomingDamage.ContainsKey(target.Id))
 			{
-				incomingDamage[target.Id] = 0;
+				incomingDamage[target.Id] = 0f;
 			}
 
 			incomingDamage[target.Id] += damage;
-			report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, damage, true, string.Empty));
+			report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, 1, true, "Archer ranged hit for 1 damage."));
 
 			Vector2I lookDir = target.Position - attacker.Position;
 			attacker.Facing = GridTypes.VectorToFacing(lookDir);
 		}
 
-		foreach (KeyValuePair<string, int> damageEntry in incomingDamage)
+		foreach (KeyValuePair<string, float> damageEntry in incomingDamage)
 		{
 			if (board.TryGetUnit(damageEntry.Key, out BoardUnit target))
 			{
@@ -236,70 +304,18 @@ public static class TurnResolver
 		}
 	}
 
-	private static bool TryResolveMeleeContact(BoardState board, BoardUnit attacker, MoveOrder move, TurnResolutionReport report)
+	private readonly struct AttackSnapshot
 	{
-		bool isMeleeUnit = attacker.Stats.Type == UnitType.Cavalry || attacker.Stats.Type == UnitType.Infantry;
-		if (!isMeleeUnit)
+		public AttackSnapshot(PlayerSide owner, UnitType type, Vector2I position)
 		{
-			return false;
+			Owner = owner;
+			Type = type;
+			Position = position;
 		}
 
-		if (!board.TryGetUnitAt(move.Destination, out BoardUnit target))
-		{
-			return false;
-		}
-
-		if (target.Owner == attacker.Owner)
-		{
-			report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Cannot initiate melee on a friendly unit tile."));
-			return true;
-		}
-
-		ISet<Vector2I> attackReach = board.GetReachableTiles(attacker.Id, includeOccupiedTiles: true);
-		if (!attackReach.Contains(move.Destination))
-		{
-			report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Target tile is not reachable for melee contact."));
-			return true;
-		}
-
-		report.MoveResults.Add(new UnitMoveResolution(attacker.Id, attacker.Position, move.Destination, false, "Melee contact initiated (combat resolution not implemented for tile-sharing)."));
-		report.AttackResults.Add(new UnitAttackResolution(attacker.Id, target.Id, 0, true, "Melee contact registered."));
-		return true;
-	}
-
-	private static int GetDirectionalDefense(BoardUnit target, Vector2I attackerPosition)
-	{
-		Vector2I toAttacker = attackerPosition - target.Position;
-		FacingDirection attackDirection = GridTypes.VectorToFacing(toAttacker);
-		int baseDefense = target.Stats.Defense;
-
-		if (attackDirection == target.Facing)
-		{
-			return baseDefense;
-		}
-
-		FacingDirection opposite = GetOpposite(target.Facing);
-		if (attackDirection == opposite)
-		{
-			return Math.Max(0, baseDefense - 2);
-		}
-
-		return Math.Max(0, baseDefense - 1);
-	}
-
-	private static FacingDirection GetOpposite(FacingDirection direction)
-	{
-		switch (direction)
-		{
-			case FacingDirection.North:
-				return FacingDirection.South;
-			case FacingDirection.East:
-				return FacingDirection.West;
-			case FacingDirection.South:
-				return FacingDirection.North;
-			default:
-				return FacingDirection.East;
-		}
+		public PlayerSide Owner { get; }
+		public UnitType Type { get; }
+		public Vector2I Position { get; }
 	}
 
 	private static void RemoveDeadUnits(BoardState board, TurnResolutionReport report)

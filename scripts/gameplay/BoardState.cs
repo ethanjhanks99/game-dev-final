@@ -6,7 +6,7 @@ using System.Linq;
 public sealed class BoardState
 {
 	private readonly Dictionary<string, BoardUnit> _unitsById = new Dictionary<string, BoardUnit>();
-	private readonly Dictionary<Vector2I, string> _occupancy = new Dictionary<Vector2I, string>();
+	private readonly Dictionary<Vector2I, HashSet<string>> _occupancy = new Dictionary<Vector2I, HashSet<string>>();
 	private readonly HashSet<Vector2I> _baseTiles = new HashSet<Vector2I>();
 
 	public BoardState()
@@ -41,12 +41,37 @@ public sealed class BoardState
 	public bool TryGetUnitAt(Vector2I coord, out BoardUnit unit)
 	{
 		unit = null;
-		if (!_occupancy.TryGetValue(coord, out string id))
+		if (!_occupancy.TryGetValue(coord, out HashSet<string> ids) || ids.Count == 0)
 		{
 			return false;
 		}
 
-		return _unitsById.TryGetValue(id, out unit);
+		string firstId = ids.First();
+		return _unitsById.TryGetValue(firstId, out unit);
+	}
+
+	public bool TryGetUnitsAt(Vector2I coord, out List<BoardUnit> units)
+	{
+		units = new List<BoardUnit>();
+		if (!_occupancy.TryGetValue(coord, out HashSet<string> ids) || ids.Count == 0)
+		{
+			return false;
+		}
+
+		foreach (string id in ids)
+		{
+			if (_unitsById.TryGetValue(id, out BoardUnit unit))
+			{
+				units.Add(unit);
+			}
+		}
+
+		return units.Count > 0;
+	}
+
+	public IEnumerable<Vector2I> GetOccupiedTiles()
+	{
+		return _occupancy.Keys;
 	}
 
 	public bool TryPlaceUnit(BoardUnit unit, out string reason)
@@ -70,14 +95,14 @@ public sealed class BoardState
 			return false;
 		}
 
-		if (_occupancy.ContainsKey(unit.Position))
+		if (_occupancy.TryGetValue(unit.Position, out HashSet<string> ids) && ids.Count > 0)
 		{
 			reason = $"Tile {unit.Position} is occupied.";
 			return false;
 		}
 
 		_unitsById[unit.Id] = unit;
-		_occupancy[unit.Position] = unit.Id;
+		AddOccupancy(unit.Position, unit.Id);
 		return true;
 	}
 
@@ -89,7 +114,7 @@ public sealed class BoardState
 		}
 
 		_unitsById.Remove(id);
-		_occupancy.Remove(unit.Position);
+		RemoveOccupancy(unit.Position, id);
 		return true;
 	}
 
@@ -120,17 +145,34 @@ public sealed class BoardState
 			return false;
 		}
 
-		if (_occupancy.ContainsKey(target))
-		{
-			reason = "Target tile is occupied.";
-			return false;
-		}
-
-		ISet<Vector2I> reachable = GetReachableTiles(unitId, includeOccupiedTiles: false);
+		ISet<Vector2I> reachable = GetReachableTiles(unitId, includeOccupiedTiles: true);
 		if (!reachable.Contains(target))
 		{
 			reason = "Target is not reachable by movement rules.";
 			return false;
+		}
+
+		if (_occupancy.TryGetValue(target, out HashSet<string> occupantIds) && occupantIds.Count > 0)
+		{
+			foreach (string occupantId in occupantIds)
+			{
+				if (!_unitsById.TryGetValue(occupantId, out BoardUnit occupant) || !occupant.IsAlive)
+				{
+					continue;
+				}
+
+				if (occupant.Owner == unit.Owner)
+				{
+					reason = "Target tile has a friendly unit.";
+					return false;
+				}
+			}
+
+			if (unit.Stats.Type == UnitType.Archer)
+			{
+				reason = "Archers cannot move onto occupied tiles.";
+				return false;
+			}
 		}
 
 		return true;
@@ -149,8 +191,8 @@ public sealed class BoardState
 		unit.Position = target;
 		unit.Facing = GridTypes.VectorToFacing(delta);
 
-		_occupancy.Remove(oldPos);
-		_occupancy[target] = unit.Id;
+		RemoveOccupancy(oldPos, unit.Id);
+		AddOccupancy(target, unit.Id);
 		return true;
 	}
 
@@ -190,7 +232,7 @@ public sealed class BoardState
 					continue;
 				}
 
-				bool occupied = _occupancy.ContainsKey(next) && _occupancy[next] != unit.Id;
+				bool occupied = IsOccupiedByOtherUnit(next, unit.Id);
 				if (occupied && !includeOccupiedTiles)
 				{
 					continue;
@@ -212,7 +254,16 @@ public sealed class BoardState
 
 	public IReadOnlyDictionary<Vector2I, string> SnapshotOccupancy()
 	{
-		return _occupancy.ToDictionary(entry => entry.Key, entry => entry.Value);
+		Dictionary<Vector2I, string> snapshot = new Dictionary<Vector2I, string>();
+		foreach (KeyValuePair<Vector2I, HashSet<string>> entry in _occupancy)
+		{
+			if (entry.Value.Count > 0)
+			{
+				snapshot[entry.Key] = entry.Value.First();
+			}
+		}
+
+		return snapshot;
 	}
 
 	public IEnumerable<BoardUnit> GetUnitsForPlayer(PlayerSide player)
@@ -223,5 +274,40 @@ public sealed class BoardState
 	public int CountAliveUnits(PlayerSide player)
 	{
 		return _unitsById.Values.Count(unit => unit.Owner == player && unit.IsAlive);
+	}
+
+	private bool IsOccupiedByOtherUnit(Vector2I coord, string unitId)
+	{
+		if (!_occupancy.TryGetValue(coord, out HashSet<string> ids) || ids.Count == 0)
+		{
+			return false;
+		}
+
+		return ids.Any(id => id != unitId);
+	}
+
+	private void AddOccupancy(Vector2I coord, string unitId)
+	{
+		if (!_occupancy.TryGetValue(coord, out HashSet<string> ids))
+		{
+			ids = new HashSet<string>();
+			_occupancy[coord] = ids;
+		}
+
+		ids.Add(unitId);
+	}
+
+	private void RemoveOccupancy(Vector2I coord, string unitId)
+	{
+		if (!_occupancy.TryGetValue(coord, out HashSet<string> ids))
+		{
+			return;
+		}
+
+		ids.Remove(unitId);
+		if (ids.Count == 0)
+		{
+			_occupancy.Remove(coord);
+		}
 	}
 }

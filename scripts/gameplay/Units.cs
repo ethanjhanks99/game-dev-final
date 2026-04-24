@@ -38,10 +38,10 @@ public abstract class BoardUnit
 	public Vector2I Position { get; set; }
 	public FacingDirection Facing { get; set; }
 	public UnitStats Stats { get; }
-	public int CurrentHealth { get; private set; }
+	public float CurrentHealth { get; private set; }
 	public bool IsAlive => CurrentHealth > 0;
 
-	public void ApplyDamage(int amount)
+	public void ApplyDamage(float amount)
 	{
 		if (amount <= 0 || !IsAlive)
 		{
@@ -53,6 +53,11 @@ public abstract class BoardUnit
 		{
 			CurrentHealth = 0;
 		}
+	}
+
+	public void SetCurrentHealth(float value)
+	{
+		CurrentHealth = Mathf.Max(0f, value);
 	}
 }
 
@@ -83,9 +88,9 @@ public sealed class ArcherUnit : BoardUnit
 public static class UnitCatalog
 {
 	// Balance values are defaults and should be tuned with playtests.
-	public static readonly UnitStats Infantry = new UnitStats(UnitType.Infantry, maxHealth: 6, attack: 3, defense: 3, movementRange: 1, attackRange: 1);
-	public static readonly UnitStats Cavalry = new UnitStats(UnitType.Cavalry, maxHealth: 4, attack: 4, defense: 2, movementRange: 3, attackRange: 1);
-	public static readonly UnitStats Archer = new UnitStats(UnitType.Archer, maxHealth: 5, attack: 3, defense: 1, movementRange: 1, attackRange: 3);
+	public static readonly UnitStats Infantry = new UnitStats(UnitType.Infantry, maxHealth: 2, attack: 2, defense: 3, movementRange: 1, attackRange: 1);
+	public static readonly UnitStats Cavalry = new UnitStats(UnitType.Cavalry, maxHealth: 2, attack: 3, defense: 2, movementRange: 3, attackRange: 1);
+	public static readonly UnitStats Archer = new UnitStats(UnitType.Archer, maxHealth: 2, attack: 1, defense: 1, movementRange: 1, attackRange: 3);
 
 	public static BoardUnit CreateUnit(UnitType type, string id, PlayerSide owner, Vector2I position, FacingDirection facing)
 	{

@@ -286,7 +286,31 @@ public partial class BoardGame : Node2D
 			Vector2I facing = GridTypes.FacingToVector(unit.Facing);
 			Vector2 facingVector = new Vector2(facing.X, facing.Y) * (TilePixelSize * 0.22f);
 			DrawLine(center, center + facingVector, new Color(0.05f, 0.05f, 0.05f), 2f);
+
+			DrawUnitHealthBar(unit, rect);
 		}
+	}
+
+	private void DrawUnitHealthBar(BoardUnit unit, Rect2 unitRect)
+	{
+		float maxHealth = Mathf.Max(0.01f, unit.Stats.MaxHealth);
+		float ratio = Mathf.Clamp(unit.CurrentHealth / maxHealth, 0f, 1f);
+
+		float barWidth = Mathf.Max(10f, TilePixelSize - 4f);
+		const float barHeight = 4f;
+		Vector2 barPos = new Vector2(
+			unitRect.Position.X + (unitRect.Size.X - barWidth) * 0.5f,
+			unitRect.Position.Y - 6f);
+
+		Rect2 bg = new Rect2(barPos, new Vector2(barWidth, barHeight));
+		DrawRect(bg, new Color(0f, 0f, 0f, 0.75f), true);
+
+		Color fill = ratio > 0.5f
+			? new Color(0.25f, 0.85f, 0.25f, 0.95f)
+			: (ratio > 0.2f ? new Color(0.95f, 0.75f, 0.2f, 0.95f) : new Color(0.9f, 0.2f, 0.2f, 0.95f));
+		Rect2 fg = new Rect2(barPos, new Vector2(barWidth * ratio, barHeight));
+		DrawRect(fg, fill, true);
+		DrawRect(bg, new Color(0f, 0f, 0f, 1f), false, 1f);
 	}
 
 	private void HandleLeftClick(Vector2I tile)
@@ -297,11 +321,53 @@ public partial class BoardGame : Node2D
 			return;
 		}
 
+		// If currently path-building, frontier/path clicks take priority even when occupied.
+		if (_activePath != null)
+		{
+			IReadOnlyList<Vector2I> frontier = _activePath.GetFrontierTiles();
+			if (frontier.Contains(tile))
+			{
+				if (!CanExtendPathToTile(tile, out string reason))
+				{
+					AppendLog(reason);
+					return;
+				}
+
+				_activePath.TryExtendPath(tile);
+				RefreshPathOverlay();
+
+				if (_activePath.IsComplete)
+				{
+					AppendLog($"Path for {_selectedUnitId} is complete (movement exhausted). Path locked in.");
+					CommitCurrentPath();
+				}
+				return;
+			}
+
+			if (_activePath.IsPathTile(tile))
+			{
+				bool trimmed = _activePath.TryTrimToTile(tile);
+				if (trimmed)
+				{
+					string label = tile == _activePath.Origin ? "origin (full reset)" : tile.ToString();
+					AppendLog($"Path for {_selectedUnitId} trimmed back to {label}.");
+					RefreshPathOverlay();
+					UpdateStatusText();
+				}
+				return;
+			}
+		}
+
 		// --- Case 1: Clicked on a unit ---
 		if (_controller.Board.TryGetUnitAt(tile, out BoardUnit unit))
 		{
 			if (unit.Owner != _activePlayer)
 			{
+				if (TryQueueArcherAttackOnUnit(unit))
+				{
+					return;
+				}
+
 				AppendLog($"It is {PlayerName(_activePlayer)}'s turn. You cannot select {PlayerName(unit.Owner)} units now.");
 				return;
 			}
@@ -334,41 +400,74 @@ public partial class BoardGame : Node2D
 			return;
 		}
 
-		// --- Case 2: Clicked on a frontier tile (extend path) ---
-		if (_activePath != null)
-		{
-			IReadOnlyList<Vector2I> frontier = _activePath.GetFrontierTiles();
-			if (frontier.Contains(tile))
-			{
-				_activePath.TryExtendPath(tile);
-				RefreshPathOverlay();
+		// --- Case 4: Clicked on empty non-frontier, non-path tile — deselect ---
+		CommitActivePathAndDeselect();
+	}
 
-				if (_activePath.IsComplete)
-				{
-					AppendLog($"Path for {_selectedUnitId} is complete (movement exhausted). Path locked in.");
-					CommitCurrentPath();
-				}
-				return;
+	private bool CanExtendPathToTile(Vector2I tile, out string reason)
+	{
+		reason = string.Empty;
+		if (string.IsNullOrWhiteSpace(_selectedUnitId) || !_controller.Board.TryGetUnit(_selectedUnitId, out BoardUnit selected))
+		{
+			reason = "No active unit selected.";
+			return false;
+		}
+
+		if (_controller.Board.TryGetUnitsAt(tile, out List<BoardUnit> occupants))
+		{
+			if (occupants.Any(unit => unit.Owner == selected.Owner && unit.Id != selected.Id))
+			{
+				reason = "Cannot move onto a friendly unit tile.";
+				return false;
 			}
 
-			// --- Case 3: Clicked on a tile already in the path (backtrack) ---
-			// This includes clicking the origin tile to reset the whole path.
-			if (_activePath.IsPathTile(tile))
+			if (selected.Stats.Type == UnitType.Archer && occupants.Any(unit => unit.Owner != selected.Owner))
 			{
-				bool trimmed = _activePath.TryTrimToTile(tile);
-				if (trimmed)
-				{
-					string label = tile == _activePath.Origin ? "origin (full reset)" : tile.ToString();
-					AppendLog($"Path for {_selectedUnitId} trimmed back to {label}.");
-					RefreshPathOverlay();
-					UpdateStatusText();
-				}
-				return;
+				reason = "Archers cannot move onto occupied enemy tiles.";
+				return false;
 			}
 		}
 
-		// --- Case 4: Clicked on empty non-frontier, non-path tile — deselect ---
-		CommitActivePathAndDeselect();
+		return true;
+	}
+
+	private bool TryQueueArcherAttackOnUnit(BoardUnit target)
+	{
+		if (string.IsNullOrWhiteSpace(_selectedUnitId) || !_controller.Board.TryGetUnit(_selectedUnitId, out BoardUnit attacker))
+		{
+			return false;
+		}
+
+		if (attacker.Owner != _activePlayer || attacker.Stats.Type != UnitType.Archer)
+		{
+			return false;
+		}
+
+		if (_activePath != null && _activePath.HasPath)
+		{
+			AppendLog("Archers cannot attack after moving. Reset the path first.");
+			return true;
+		}
+
+		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
+		if (selection.Moves.Any(move => move.UnitId == attacker.Id))
+		{
+			AppendLog("Archers cannot move and attack on the same turn.");
+			return true;
+		}
+
+		int distance = GridTypes.ManhattanDistance(attacker.Position, target.Position);
+		if (distance < 1 || distance > 3)
+		{
+			AppendLog("Target is out of archer range (1-3 tiles).");
+			return true;
+		}
+
+		selection.Attacks.RemoveAll(attack => attack.AttackerUnitId == attacker.Id);
+		selection.Attacks.Add(new AttackOrder(attacker.Id, target.Id));
+		AppendLog($"Queued archer attack: {attacker.Id} -> {target.Id}.");
+		UpdateStatusText();
+		return true;
 	}
 
 	private void HandleRightClick(Vector2I tile)
@@ -444,6 +543,7 @@ public partial class BoardGame : Node2D
 
 		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
 		selection.Moves.RemoveAll(move => move.UnitId == unitId);
+		selection.Attacks.RemoveAll(attack => attack.AttackerUnitId == unitId);
 		selection.Moves.Add(new MoveOrder(unitId, destination));
 
 		_unitPaths[unitId] = _activePath;
@@ -1014,7 +1114,7 @@ public partial class BoardGame : Node2D
 			placementInfo = $" | Placement: {_pendingPlacementType.Value} @ {tileLabel}";
 		}
 
-		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Units: {aliveUnits} | UnitPts: {unitPoints} | Selected: {selectionLabel}{pathInfo}{placementInfo} | Queued Moves: {selection.Moves.Count} | Locked: {_lockedPlayers.Count}/4";
+		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Units: {aliveUnits} | UnitPts: {unitPoints} | Selected: {selectionLabel}{pathInfo}{placementInfo} | Queued Moves: {selection.Moves.Count} | Queued Attacks: {selection.Attacks.Count} | Locked: {_lockedPlayers.Count}/4";
 		UpdatePurchasePanel();
 	}
 
