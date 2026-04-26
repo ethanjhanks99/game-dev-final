@@ -332,5 +332,18 @@ public static class TurnResolver
 				report.RemovedUnits.Add(deadId);
 			}
 		}
+
+		// Detect which players now have zero units remaining.
+		HashSet<PlayerSide> survivingPlayers = new HashSet<PlayerSide>(
+			board.Units.Select(unit => unit.Owner));
+
+		foreach (PlayerSide side in Enum.GetValues(typeof(PlayerSide)))
+		{
+			if (side == PlayerSide.None) continue;
+			if (!survivingPlayers.Contains(side) && board.HasEverHadUnits(side))
+			{
+				report.EliminatedPlayers.Add(side);
+			}
+		}
 	}
 }

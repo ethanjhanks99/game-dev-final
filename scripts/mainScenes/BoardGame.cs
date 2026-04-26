@@ -60,6 +60,11 @@ public partial class BoardGame : Node2D
 	private double _timeRemaining;
 	private bool _timerRunning;
 
+	// Win/loss state.
+	// Players who have been eliminated (no units left). They spectate but cannot act.
+	private readonly HashSet<PlayerSide> _eliminatedPlayers = new HashSet<PlayerSide>();
+	private bool _gameOver;
+
 	public override void _Ready()
 	{
 		_controller = GetNode<GridCombatController>("GridCombatController");
@@ -582,7 +587,8 @@ public partial class BoardGame : Node2D
 		_lockedPlayers.Add(_activePlayer);
 		AppendLog($"{PlayerName(_activePlayer)} locked in orders.");
 
-		if (_lockedPlayers.Count >= _turnOrder.Length)
+		int activePlayers = _turnOrder.Count(s => !_eliminatedPlayers.Contains(s));
+		if (_lockedPlayers.Count >= activePlayers)
 		{
 			ResolveAllLockedTurns();
 			return;
@@ -624,8 +630,13 @@ public partial class BoardGame : Node2D
 			AppendLog($"Removed unit: {removed}");
 		}
 
+		// Handle any newly eliminated players before advancing turn.
+		HandleEliminationsAndVictory(report);
+
+		if (_gameOver) return;
+
 		ResetTurnPlanning();
-		_activePlayer = PlayerSide.One;
+		_activePlayer = _turnOrder.FirstOrDefault(s => !_eliminatedPlayers.Contains(s));
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
@@ -673,7 +684,8 @@ public partial class BoardGame : Node2D
 
 		_lockedPlayers.Add(_activePlayer);
 
-		if (_lockedPlayers.Count >= _turnOrder.Length)
+		int activePlayers = _turnOrder.Count(s => !_eliminatedPlayers.Contains(s));
+		if (_lockedPlayers.Count >= activePlayers)
 		{
 			ResolveAllLockedTurns();
 			return;
@@ -705,6 +717,240 @@ public partial class BoardGame : Node2D
 		}
 	}
 
+	// ---- Win / Loss handling ----
+
+	private void HandleEliminationsAndVictory(TurnResolutionReport report)
+	{
+		// Process each newly eliminated player.
+		foreach (PlayerSide eliminated in report.EliminatedPlayers)
+		{
+			if (_eliminatedPlayers.Contains(eliminated)) continue;
+
+			_eliminatedPlayers.Add(eliminated);
+			AppendLog($"{PlayerName(eliminated)} has been eliminated!");
+
+			// Remove all remaining units for this player from the board.
+			List<string> theirUnits = _controller.Board.Units
+				.Where(u => u.Owner == eliminated)
+				.Select(u => u.Id)
+				.ToList();
+			foreach (string unitId in theirUnits)
+			{
+				_controller.Board.ForceRemoveUnit(unitId);
+			}
+
+			ShowEliminationPopup(eliminated);
+		}
+
+		// Check for a winner: only one active player remaining.
+		List<PlayerSide> survivors = _turnOrder
+			.Where(s => !_eliminatedPlayers.Contains(s))
+			.ToList();
+
+		if (survivors.Count == 1)
+		{
+			_gameOver = true;
+			StopTurnTimer();
+			AppendLog($"{PlayerName(survivors[0])} wins!");
+			ShowVictoryPopup(survivors[0]);
+		}
+		else if (survivors.Count == 0)
+		{
+			// All players eliminated simultaneously — draw.
+			_gameOver = true;
+			StopTurnTimer();
+			AppendLog("Draw — all players eliminated simultaneously!");
+			ShowDrawPopup();
+		}
+
+		QueueRedraw();
+	}
+
+	/// <summary>
+	/// Creates a transient elimination popup for the given player.
+	/// Disappears after 4 seconds or on click.
+	/// </summary>
+	private void ShowEliminationPopup(PlayerSide side)
+	{
+		CanvasLayer overlay = CreateGameOverlay(100);
+
+		// Dark semi-transparent backdrop.
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.55f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		// Centred card.
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(380, 160);
+		card.Position = new Vector2(-190, -80);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 12);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "You Have Been Eliminated";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 22);
+		title.Modulate = new Color(0.95f, 0.25f, 0.25f);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = $"{PlayerName(side)} — all units lost.\nClick anywhere or wait to spectate.";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.AutowrapMode = TextServer.AutowrapMode.Word;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+
+		// Auto-dismiss after 4 seconds or on any click.
+		double elapsed = 0.0;
+		backdrop.GuiInput += (InputEvent ev) =>
+		{
+			if (ev is InputEventMouseButton mb && mb.Pressed) overlay.QueueFree();
+		};
+		card.GuiInput += (InputEvent ev) =>
+		{
+			if (ev is InputEventMouseButton mb && mb.Pressed) overlay.QueueFree();
+		};
+
+		// Use a Godot Timer node for auto-dismiss.
+		Timer dismissTimer = new Timer();
+		dismissTimer.WaitTime = 4.0;
+		dismissTimer.OneShot = true;
+		dismissTimer.Timeout += () => { if (IsInstanceValid(overlay)) overlay.QueueFree(); };
+		overlay.AddChild(dismissTimer);
+		dismissTimer.Start();
+
+		// Spectator "Main Menu" button pinned to bottom of screen (persists after popup closes).
+		AddSpectatorBar(side);
+	}
+
+	/// <summary>
+	/// Creates a persistent victory popup for the winner. Does not auto-dismiss.
+	/// </summary>
+	private void ShowVictoryPopup(PlayerSide winner)
+	{
+		CanvasLayer overlay = CreateGameOverlay(101);
+
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.65f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(400, 180);
+		card.Position = new Vector2(-200, -90);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 14);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "You Win!";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 30);
+		title.Modulate = GetPlayerColor(winner);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = $"{PlayerName(winner)} — last army standing!";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Return to Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+	}
+
+	/// <summary>
+	/// Creates a persistent draw popup.
+	/// </summary>
+	private void ShowDrawPopup()
+	{
+		CanvasLayer overlay = CreateGameOverlay(101);
+
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.65f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(400, 160);
+		card.Position = new Vector2(-200, -80);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 14);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "Draw!";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 28);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = "All players were eliminated simultaneously.";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.AutowrapMode = TextServer.AutowrapMode.Word;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Return to Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+	}
+
+	/// <summary>
+	/// Adds a persistent spectator bar at the bottom of the screen for an eliminated player.
+	/// Shows who they are and gives a Main Menu button that stays visible while spectating.
+	/// </summary>
+	private void AddSpectatorBar(PlayerSide side)
+	{
+		CanvasLayer barLayer = CreateGameOverlay(99);
+
+		PanelContainer bar = new PanelContainer();
+		bar.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+		bar.CustomMinimumSize = new Vector2(0, 44);
+		bar.Position = new Vector2(0, -44);
+		barLayer.AddChild(bar);
+
+		HBoxContainer hbox = new HBoxContainer();
+		hbox.AddThemeConstantOverride("separation", 16);
+		bar.AddChild(hbox);
+
+		Label spectatorLabel = new Label();
+		spectatorLabel.Text = $"☠ {PlayerName(side)} eliminated — spectating";
+		spectatorLabel.VerticalAlignment = VerticalAlignment.Center;
+		spectatorLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+		hbox.AddChild(spectatorLabel);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		hbox.AddChild(menuBtn);
+	}
+
+	/// <summary>Creates a new CanvasLayer parented to this node, for overlay popups.</summary>
+	private CanvasLayer CreateGameOverlay(int layer)
+	{
+		CanvasLayer cl = new CanvasLayer();
+		cl.Layer = layer;
+		AddChild(cl);
+		return cl;
+	}
+
 	private void OnMainMenuPressed()
 	{
 		if (GameManager.Instance != null)
@@ -719,7 +965,7 @@ public partial class BoardGame : Node2D
 		for (int step = 1; step <= _turnOrder.Length; step++)
 		{
 			PlayerSide candidate = _turnOrder[(currentIndex + step) % _turnOrder.Length];
-			if (!_lockedPlayers.Contains(candidate))
+			if (!_lockedPlayers.Contains(candidate) && !_eliminatedPlayers.Contains(candidate))
 			{
 				_activePlayer = candidate;
 				return;
