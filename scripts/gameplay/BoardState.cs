@@ -8,6 +8,12 @@ public sealed class BoardState
 	private readonly Dictionary<string, BoardUnit> _unitsById = new Dictionary<string, BoardUnit>();
 	private readonly Dictionary<Vector2I, HashSet<string>> _occupancy = new Dictionary<Vector2I, HashSet<string>>();
 	private readonly HashSet<Vector2I> _baseTiles = new HashSet<Vector2I>();
+	// Tracks which player sides have ever had at least one unit placed, so we can distinguish
+	// "not yet in the game" from "was eliminated this turn".
+	private readonly HashSet<PlayerSide> _sidesWithUnitsEver = new HashSet<PlayerSide>();
+
+	/// <summary>Returns true if this player side has ever had at least one unit placed on the board.</summary>
+	public bool HasEverHadUnits(PlayerSide side) => _sidesWithUnitsEver.Contains(side);
 
 	public BoardState()
 	{
@@ -103,10 +109,27 @@ public sealed class BoardState
 
 		_unitsById[unit.Id] = unit;
 		AddOccupancy(unit.Position, unit.Id);
+		_sidesWithUnitsEver.Add(unit.Owner);
 		return true;
 	}
 
 	public bool RemoveDeadUnit(string id)
+	{
+		if (!_unitsById.TryGetValue(id, out BoardUnit unit))
+		{
+			return false;
+		}
+
+		_unitsById.Remove(id);
+		RemoveOccupancy(unit.Position, id);
+		return true;
+	}
+
+	/// <summary>
+	/// Forcibly removes any unit by ID regardless of alive status.
+	/// Used to clear an eliminated player's remaining pieces from the board.
+	/// </summary>
+	public bool ForceRemoveUnit(string id)
 	{
 		if (!_unitsById.TryGetValue(id, out BoardUnit unit))
 		{
