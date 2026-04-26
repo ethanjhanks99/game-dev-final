@@ -60,6 +60,8 @@ public partial class BoardGame : Node2D
 	private double _timeRemaining;
 	private bool _timerRunning;
 
+	private Telecom _telecom;
+
 	public override void _Ready()
 	{
 		_controller = GetNode<GridCombatController>("GridCombatController");
@@ -72,6 +74,7 @@ public partial class BoardGame : Node2D
 		_buyArcherButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyArcherButton");
 		_buyCavalryButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyCavalryButton");
 		_confirmPlacementButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/ConfirmPlacementButton");
+		_telecom = GetNode<Telecom>("Telecom");
 
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/EndTurnButton").Pressed += OnEndTurnPressed;
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/ResolveTurnButton").Pressed += OnResolveTurnPressed;
@@ -215,8 +218,8 @@ public partial class BoardGame : Node2D
 		Image image = _palaceTexture.GetImage();
 		for (int i = 0; i < 3; i++)
 		{
-        	image.Rotate90(ClockDirection.Clockwise);
-        	Texture2D rotatedTexture = ImageTexture.CreateFromImage(image);
+			image.Rotate90(ClockDirection.Clockwise);
+			Texture2D rotatedTexture = ImageTexture.CreateFromImage(image);
 
 			switch(i)
 			{
@@ -850,16 +853,35 @@ public partial class BoardGame : Node2D
 			return;
 		}
 
-		string id = BuildPurchasedUnitId(_activePlayer, type);
-		FacingDirection facing = GetDefaultFacing(_activePlayer);
-		if (!_controller.SpawnUnit(type, id, _activePlayer, tile, facing, out string reason))
+		if(!Multiplayer.IsServer())
+		{
+			_telecom.SendPlacement(1, _activePlayer, type, tile);
+		}
+		else{
+			//place unit locally and send to clients
+			PlaceUnit(_activePlayer, type, tile);
+			foreach (long peerId in Multiplayer.GetPeers())
+			{
+				_telecom.SendPlacement(peerId, _activePlayer, type, tile);
+			}	
+		}
+
+	}
+
+	public void PlaceUnit(PlayerSide player, UnitType type, Vector2I tile)
+	{
+		int cost = UnitPointSystem.GetUnitCost(type);
+		int available = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
+		string id = BuildPurchasedUnitId(player, type);
+		FacingDirection facing = GetDefaultFacing(player);
+		if (!_controller.SpawnUnit(type, id, player, tile, facing, out string reason))
 		{
 			AppendLog($"Failed to spawn purchased unit {id}: {reason}");
 			return;
 		}
 
-		_unitPointsByPlayer[_activePlayer] = available - cost;
-		AppendLog($"{PlayerName(_activePlayer)} placed {type} ({id}) at {tile} for {cost} point(s). Remaining: {_unitPointsByPlayer[_activePlayer]}.");
+		_unitPointsByPlayer[player] = available - cost;
+		AppendLog($"{PlayerName(player)} placed {type} ({id}) at {tile} for {cost} point(s). Remaining: {_unitPointsByPlayer[player]}.");
 		CancelPendingPlacement();
 		UpdateStatusText();
 		QueueRedraw();
