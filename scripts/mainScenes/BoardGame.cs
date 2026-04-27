@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Linq;
 
 public partial class BoardGame : Node2D
@@ -36,6 +37,9 @@ public partial class BoardGame : Node2D
 	private Texture2D _infantryTexture;
 	private Texture2D _archerTexture;
 	private Texture2D _calvaryTexture;
+
+	// Base capture progress
+	private Dictionary<PlayerSide, int> _captureProgress = new Dictionary<PlayerSide, int>();
 
 	private readonly HashSet<PlayerSide> _lockedPlayers = new HashSet<PlayerSide>();
 	private readonly Dictionary<PlayerSide, PlayerTurnSelection> _pendingSelections = new Dictionary<PlayerSide, PlayerTurnSelection>();
@@ -105,6 +109,12 @@ public partial class BoardGame : Node2D
 		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
 		AppendLog("Unit purchases: [I] Infantry (1), [A] Archer (2), [C] Cavalry (3). Each player starts with 12 unit points.");
 		QueueRedraw();
+
+		// Set Initial Capture Progress to 0
+		foreach (PlayerSide side in _turnOrder)
+		{
+			_captureProgress[side] = 0;
+		}
 	}
 
 	public override void _Process(double delta)
@@ -125,6 +135,7 @@ public partial class BoardGame : Node2D
 	public override void _Draw()
 	{
 		DrawBoardTiles();
+		DrawElimCounter();
 		DrawUnits();
 	}
 
@@ -239,10 +250,49 @@ public partial class BoardGame : Node2D
 			}
 			DrawTextureRectRegion(rotatedTexture, palaceRect, PalaceSrcRegion[1 + i]);
 		}
-		
+	}
 
-		
-		//GD.Print(new Rect2(PalaceSrcRegion.Position.X + 128, PalaceSrcRegion.Position.Y, 128, 96));
+	private void DrawElimCounter()
+	{
+		foreach (PlayerSide side in _turnOrder)
+		{
+			List<Vector2I> counterTiles = new List<Vector2I>();
+			switch(side)
+			{
+				case PlayerSide.One:
+					counterTiles.Add(new Vector2I(0, -8));
+					counterTiles.Add(new Vector2I(1, -8));
+					counterTiles.Add(new Vector2I(2, -8));
+					break;
+				case PlayerSide.Two:
+					counterTiles.Add(new Vector2I(15, 0));
+					counterTiles.Add(new Vector2I(15, 1));
+					counterTiles.Add(new Vector2I(15, 2));
+					break;
+				case PlayerSide.Three:
+					counterTiles.Add(new Vector2I(7, 15));
+					counterTiles.Add(new Vector2I(6, 15));
+					counterTiles.Add(new Vector2I(5, 15));
+					break;
+				case PlayerSide.Four:
+					counterTiles.Add(new Vector2I(-8, 7));
+					counterTiles.Add(new Vector2I(-8, 6));
+					counterTiles.Add(new Vector2I(-8, 5));
+					break;
+				default:
+					break;
+			}
+
+			for (int i = 0; i < 3; i++)
+			{
+				Vector2 center = TileToScreen(counterTiles[i]) + new Vector2(TilePixelSize * 0.5f, TilePixelSize * 0.5f);
+				if (i < _captureProgress[side]){
+					Color sideColor = GetPlayerColor(side);
+					DrawCircle(center, TilePixelSize * 0.4f, sideColor);
+				}
+				DrawArc(center, TilePixelSize * 0.4f, 0f, Mathf.Tau, 24, new Color(0f, 0f, 0f), 2f);
+			}
+		}
 	}
 
 	private void DrawUnits()
@@ -282,17 +332,11 @@ public partial class BoardGame : Node2D
 			}
 
 			Vector2 center = TileToScreen(unit.Position) + new Vector2(TilePixelSize * 0.5f, TilePixelSize * 0.5f);
-			//Color unitColor = GetPlayerColor(unit.Owner);
-			//DrawCircle(center, TilePixelSize * 0.32f, unitColor);
 
 			if (unit.Id == _selectedUnitId)
 			{
 				DrawArc(center, TilePixelSize * 0.4f, 0f, Mathf.Tau, 24, new Color(1f, 1f, 1f), 2f);
 			}
-
-			//Vector2I facing = GridTypes.FacingToVector(unit.Facing);
-			//Vector2 facingVector = new Vector2(facing.X, facing.Y) * (TilePixelSize * 0.22f);
-			//DrawLine(center, center + facingVector, new Color(0.05f, 0.05f, 0.05f), 2f);
 
 			DrawUnitHealthBar(unit, rect);
 		}
@@ -628,6 +672,52 @@ public partial class BoardGame : Node2D
 		foreach (string removed in report.RemovedUnits)
 		{
 			AppendLog($"Removed unit: {removed}");
+		}
+
+		foreach (PlayerSide side in _turnOrder)
+		{
+			if (_eliminatedPlayers.Contains(side))
+			{
+				continue;
+			}
+
+			if (!_baseAreas.TryGetValue(side, out HashSet<Vector2I> area))
+			{
+				continue;
+			}
+
+			Vector2I anchor = GridTypes.BaseTiles.TryGetValue(side, out Vector2I baseTile)
+				? baseTile
+				: area.First();
+
+			IEnumerable<Vector2I> ordered = area
+				.OrderBy(t => GridTypes.ManhattanDistance(t, anchor))
+				.ThenBy(t => t.Y)
+				.ThenBy(t => t.X);
+
+			bool enemyPresent = false;
+
+			foreach (Vector2I checkTile in ordered)
+			{
+				if (_controller.Board.TryGetUnitAt(checkTile, out BoardUnit checkUnit) && checkUnit.Owner != side)
+				{
+					_captureProgress[side] += 1;
+					if (_captureProgress[side] >= 3)
+					{
+						report.EliminatedPlayers.Add(side);
+					} else {
+						AppendLog($"{PlayerName(side)}'s base being captured by unit {checkUnit.Id}. Base capture progress: {_captureProgress[side]}/3.");
+					}
+					enemyPresent = true;
+					break;
+				}
+			}
+
+			if (_captureProgress[side] > 0 && !enemyPresent)
+			{
+				_captureProgress[side] = 0;
+				AppendLog($"{PlayerName(side)}'s base is no longer being captured. Reset capture progress to 0.");
+			}
 		}
 
 		// Handle any newly eliminated players before advancing turn.
