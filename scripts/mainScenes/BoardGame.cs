@@ -618,6 +618,7 @@ public partial class BoardGame : Node2D
 
 		StopTurnTimer();
 
+		_telecom.SendSelections(1, _pendingSelections);
 		IEnumerable<PlayerTurnSelection> selections = _turnOrder.Select(side => _pendingSelections[side]);
 		TurnResolutionReport report = _controller.ResolveTurn(selections);
 
@@ -635,6 +636,9 @@ public partial class BoardGame : Node2D
 		UpdateStatusText();
 		QueueRedraw();
 	}
+
+	public void AddPendingMove(PlayerSide player, MoveOrder move){ _pendingSelections[player].Moves.Add(move); }
+	public void AddPendingAttack(PlayerSide player, AttackOrder attack){ _pendingSelections[player].Attacks.Add(attack); }
 
 	// ---- Turn timer ----
 
