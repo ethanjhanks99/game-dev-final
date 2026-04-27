@@ -1,12 +1,15 @@
 using Godot;
+using System;
 
 public partial class GameManager : Node2D
 {
 	public static GameManager Instance { get; private set; }
 
 
-	public bool server = false;
-	public string host;
+	private bool server = false;
+	private string host;
+	private int players;
+	private int thisPlayer; //player number either assigned to client or set to 1 for server
 
 	private PackedScene _MainMenu;
 	private PackedScene _Game;
@@ -19,15 +22,46 @@ public partial class GameManager : Node2D
 		_Game = GD.Load<PackedScene>("res://scenes/mainScenes/BoardGame.tscn");
 		_Lobby = GD.Load<PackedScene>("res://scenes/mainScenes/Lobby.tscn");
 
+		Multiplayer.PeerConnected += OnPeerConnected;
+		Multiplayer.PeerDisconnected += OnPeerDisconnected;
 
+		this.players = 0;
+	}
+
+	private void OnPeerConnected(long id)
+	{
+		if (!Multiplayer.IsServer()) return;
+
+		GD.Print($"Peer connected: {id}");
+		players++;
+		int playerNumber = players;
+		RpcId(id, nameof(ReceivePlayerNumber), playerNumber);
+		GD.Print($"Peer {id} assigned player number {playerNumber}.");
+
+	}
+
+	private void OnPeerDisconnected(long id)
+	{
+		if (!Multiplayer.IsServer()) return;
+		players--;
+		GD.Print($"Peer disconnected: {id}");
+	}
+
+	[Rpc]
+	private void ReceivePlayerNumber(int playerNumber)
+	{
+		this.thisPlayer = playerNumber;
+		GD.Print($"Received player number: {playerNumber}");
 	}
 
 	public void StartServer()
 	{
 		this.server = true;
 		ENetMultiplayerPeer peer = new ENetMultiplayerPeer();
-		peer.CreateServer(8000, 64);
+		peer.CreateServer(8000, 3);
 		Multiplayer.MultiplayerPeer = peer;
+		players++;
+		thisPlayer = 1;
 		GD.Print("Server Started");
 		LoadLobby();
 	}
@@ -56,5 +90,15 @@ public partial class GameManager : Node2D
 	public void LoadLobby()
 	{
 		GetTree().ChangeSceneToPacked(_Lobby);
+	}
+
+	public int GetPlayerNumber() 
+	{
+		return thisPlayer;
+	}
+
+	public string GetHost() 
+	{
+		return host;
 	}
 }

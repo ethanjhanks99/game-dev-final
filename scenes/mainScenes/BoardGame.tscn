@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://b3owrp4n42yfd" path="res://scripts/mainScenes/BoardGame.cs" id="1"]
 [ext_resource type="Script" uid="uid://bhtq8ui0u3evb" path="res://scripts/gameplay/GridCombatController.cs" id="2"]
 [ext_resource type="Script" uid="uid://bmg6kebhsijad" path="res://scripts/gameplay/visual/MoveHighlightOverlay.cs" id="3"]
+[ext_resource type="Script" uid="uid://bgnx1jfucidq5" path="res://scripts/network/Telecom.cs" id="3_0puqn"]
 [ext_resource type="AudioStream" uid="uid://ddgvl6gi3fvlj" path="res://assets/audio/HoliznaCC0 - Quickly!.mp3" id="4_n1ox5"]
 [ext_resource type="Script" uid="uid://dpy3ek7ukm3x8" path="res://scripts/Camera.cs" id="5_kq6om"]
 
@@ -11,6 +12,9 @@ script = ExtResource("1")
 
 [node name="GridCombatController" type="Node" parent="." unique_id=824447714]
 script = ExtResource("2")
+
+[node name="Telecom" type="Node" parent="." unique_id=1800294141]
+script = ExtResource("3_0puqn")
 
 [node name="MoveHighlightOverlay" type="Node2D" parent="." unique_id=887887996]
 script = ExtResource("3")

@@ -64,6 +64,9 @@ public partial class BoardGame : Node2D
 	private double _timeRemaining;
 	private bool _timerRunning;
 
+	private Telecom _telecom;
+	private GameManager _gameManager;
+	private int _readyPlayers = 0;
 	// Win/loss state.
 	// Players who have been eliminated (no units left). They spectate but cannot act.
 	private readonly HashSet<PlayerSide> _eliminatedPlayers = new HashSet<PlayerSide>();
@@ -81,6 +84,7 @@ public partial class BoardGame : Node2D
 		_buyArcherButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyArcherButton");
 		_buyCavalryButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/PurchaseButtons/BuyCavalryButton");
 		_confirmPlacementButton = GetNode<Button>("CanvasLayer/UI/Margin/VBox/ConfirmPlacementButton");
+		_telecom = GetNode<Telecom>("Telecom");
 
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/EndTurnButton").Pressed += OnEndTurnPressed;
 		GetNode<Button>("CanvasLayer/UI/Margin/VBox/ResolveTurnButton").Pressed += OnResolveTurnPressed;
@@ -101,11 +105,14 @@ public partial class BoardGame : Node2D
 		_archerTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteArcher.png");
 		_calvaryTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteKnight.png");
 
+		_gameManager = GetNode<GameManager>("/root/GameManager");
+		_activePlayer = (PlayerSide)_gameManager.GetPlayerNumber();
+
+		_telecom.SendReadyStatus();
 		ResetTurnPlanning();
 		InitializeUnitEconomy();
 		OnPlayerTurnStarted(_activePlayer);
 		UpdateStatusText();
-		StartTurnTimer();
 		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
 		AppendLog("Unit purchases: [I] Infantry (1), [A] Archer (2), [C] Cavalry (3). Each player starts with 12 unit points.");
 		QueueRedraw();
@@ -231,8 +238,8 @@ public partial class BoardGame : Node2D
 		Image image = _palaceTexture.GetImage();
 		for (int i = 0; i < 3; i++)
 		{
-        	image.Rotate90(ClockDirection.Clockwise);
-        	Texture2D rotatedTexture = ImageTexture.CreateFromImage(image);
+			image.Rotate90(ClockDirection.Clockwise);
+			Texture2D rotatedTexture = ImageTexture.CreateFromImage(image);
 
 			switch(i)
 			{
@@ -628,21 +635,24 @@ public partial class BoardGame : Node2D
 			CommitCurrentPath();
 		}
 
-		_lockedPlayers.Add(_activePlayer);
 		AppendLog($"{PlayerName(_activePlayer)} locked in orders.");
 
-		int activePlayers = _turnOrder.Count(s => !_eliminatedPlayers.Contains(s));
-		if (_lockedPlayers.Count >= activePlayers)
-		{
-			ResolveAllLockedTurns();
-			return;
-		}
+		_telecom.SendSelections(1, _pendingSelections);
+		_telecom.SendLockedStatus(_activePlayer);
 
-		AdvanceToNextUnlockedPlayer();
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
 		UpdateStatusText();
+	}
+
+	public void AddLockedPlayer(PlayerSide player)
+	{ 
+		_lockedPlayers.Add(player);
+		if(Multiplayer.IsServer() && (Multiplayer.GetPeers().Length+1) == _lockedPlayers.Count)
+		{
+			_telecom.TriggerResolve();
+		}
 	}
 
 	private void OnResolveTurnPressed()
@@ -656,7 +666,7 @@ public partial class BoardGame : Node2D
 		ResolveAllLockedTurns();
 	}
 
-	private void ResolveAllLockedTurns()
+	public void ResolveAllLockedTurns()
 	{
 		if (_pendingPlacementType.HasValue)
 		{
@@ -726,7 +736,6 @@ public partial class BoardGame : Node2D
 		if (_gameOver) return;
 
 		ResetTurnPlanning();
-		_activePlayer = _turnOrder.FirstOrDefault(s => !_eliminatedPlayers.Contains(s));
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
@@ -734,9 +743,12 @@ public partial class BoardGame : Node2D
 		QueueRedraw();
 	}
 
+	public void AddPendingMove(PlayerSide player, MoveOrder move){ _pendingSelections[player].Moves.Add(move); }
+	public void AddPendingAttack(PlayerSide player, AttackOrder attack){ _pendingSelections[player].Attacks.Add(attack); }
+
 	// ---- Turn timer ----
 
-	private void StartTurnTimer()
+	public void StartTurnTimer()
 	{
 		_timeRemaining = TurnTimeLimitSeconds;
 		_timerRunning = true;
@@ -759,7 +771,7 @@ public partial class BoardGame : Node2D
 	private void OnTurnTimerExpired()
 	{
 		_timerRunning = false;
-		AppendLog($"{PlayerName(_activePlayer)}'s time ran out — turn skipped (no moves locked in).");
+		AppendLog($"{PlayerName(_activePlayer)}'s time ran out.");
 
 		if (_pendingPlacementType.HasValue)
 		{
@@ -772,20 +784,8 @@ public partial class BoardGame : Node2D
 			CommitCurrentPath();
 		}
 
-		_lockedPlayers.Add(_activePlayer);
-
-		int activePlayers = _turnOrder.Count(s => !_eliminatedPlayers.Contains(s));
-		if (_lockedPlayers.Count >= activePlayers)
-		{
-			ResolveAllLockedTurns();
-			return;
-		}
-
-		AdvanceToNextUnlockedPlayer();
-		OnPlayerTurnStarted(_activePlayer);
-		ClearSelection();
-		RestartTurnTimer();
-		UpdateStatusText();
+		_telecom.SendSelections(1, _pendingSelections);
+		_telecom.SendLockedStatus(_activePlayer);
 	}
 
 	private void UpdateTimerLabel()
@@ -807,6 +807,13 @@ public partial class BoardGame : Node2D
 		}
 	}
 
+	public void UpdateReadyPlayers()
+	{
+		_readyPlayers++;
+		if(Multiplayer.IsServer() && _readyPlayers==(Multiplayer.GetPeers().Length+1))
+		{
+			_telecom.TriggerStartTimer();
+		}
 	// ---- Win / Loss handling ----
 
 	private void HandleEliminationsAndVictory(TurnResolutionReport report)
@@ -1186,16 +1193,35 @@ public partial class BoardGame : Node2D
 			return;
 		}
 
-		string id = BuildPurchasedUnitId(_activePlayer, type);
-		FacingDirection facing = GetDefaultFacing(_activePlayer);
-		if (!_controller.SpawnUnit(type, id, _activePlayer, tile, facing, out string reason))
+		if(!Multiplayer.IsServer())
+		{
+			_telecom.SendPlacement(1, _activePlayer, type, tile);
+		}
+		else{
+			//place unit locally and send to clients
+			PlaceUnit(_activePlayer, type, tile);
+			foreach (long peerId in Multiplayer.GetPeers())
+			{
+				_telecom.SendPlacement(peerId, _activePlayer, type, tile);
+			}	
+		}
+
+	}
+
+	public void PlaceUnit(PlayerSide player, UnitType type, Vector2I tile)
+	{
+		int cost = UnitPointSystem.GetUnitCost(type);
+		int available = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
+		string id = BuildPurchasedUnitId(player, type);
+		FacingDirection facing = GetDefaultFacing(player);
+		if (!_controller.SpawnUnit(type, id, player, tile, facing, out string reason))
 		{
 			AppendLog($"Failed to spawn purchased unit {id}: {reason}");
 			return;
 		}
 
-		_unitPointsByPlayer[_activePlayer] = available - cost;
-		AppendLog($"{PlayerName(_activePlayer)} placed {type} ({id}) at {tile} for {cost} point(s). Remaining: {_unitPointsByPlayer[_activePlayer]}.");
+		_unitPointsByPlayer[player] = available - cost;
+		AppendLog($"{PlayerName(player)} placed {type} ({id}) at {tile} for {cost} point(s). Remaining: {_unitPointsByPlayer[player]}.");
 		CancelPendingPlacement();
 		UpdateStatusText();
 		QueueRedraw();
