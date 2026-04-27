@@ -654,7 +654,6 @@ public partial class BoardGame : Node2D
 
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
-		RestartTurnTimer();
 		UpdateStatusText();
 	}
 

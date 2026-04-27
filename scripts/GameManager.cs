@@ -60,7 +60,7 @@ public partial class GameManager : Node2D
 		ENetMultiplayerPeer peer = new ENetMultiplayerPeer();
 		peer.CreateServer(8000, 3);
 		Multiplayer.MultiplayerPeer = peer;
-		players++;
+		players=1;
 		thisPlayer = 1;
 		GD.Print("Server Started");
 		LoadLobby();
