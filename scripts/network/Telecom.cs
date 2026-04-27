@@ -125,7 +125,6 @@ public partial class Telecom : Node
 		RpcId(1, nameof(ReceiveLockedStatus), player.ToString());
 	}
 
-	//inputs: none
 	//behaviour: triggers resolution locally and on all clients, with a brief delay to allow all selections to get sent to all machines.
 	[Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
 	public async void TriggerResolve()
@@ -139,5 +138,32 @@ public partial class Telecom : Node
 				RpcId(peerId, nameof(TriggerResolve));
 			}
 		}
+	}
+
+	//behaviour: start timer in boardgame. if server, tell clients to do the same via this method.
+	[Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
+	public void TriggerStartTimer()
+	{
+		_boardGame.StartTurnTimer();
+		if(Multiplayer.IsServer())
+		{
+			foreach(long peerId in Multiplayer.GetPeers())
+			{
+				RpcId(peerId, nameof(TriggerStartTimer));
+			}
+		}
+	}
+
+	//behaviour: tell boardgame to increment readyplayers (server side only)
+	[Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
+	public void ReceiveReadyStatus()
+	{
+		_boardGame.UpdateReadyPlayers();
+	}
+
+	//behaviour: tell the server that user has started the game
+	public void SendReadyStatus()
+	{
+		RpcId(1, nameof(ReceiveReadyStatus));
 	}
 }

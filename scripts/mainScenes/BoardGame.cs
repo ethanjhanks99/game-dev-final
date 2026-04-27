@@ -62,6 +62,7 @@ public partial class BoardGame : Node2D
 
 	private Telecom _telecom;
 	private GameManager _gameManager;
+	private int _readyPlayers = 0;
 
 	public override void _Ready()
 	{
@@ -99,11 +100,11 @@ public partial class BoardGame : Node2D
 		_gameManager = GetNode<GameManager>("/root/GameManager");
 		_activePlayer = (PlayerSide)_gameManager.GetPlayerNumber();
 
+		_telecom.SendReadyStatus();
 		ResetTurnPlanning();
 		InitializeUnitEconomy();
 		OnPlayerTurnStarted(_activePlayer);
 		UpdateStatusText();
-		StartTurnTimer();
 		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
 		AppendLog("Unit purchases: [I] Infantry (1), [A] Archer (2), [C] Cavalry (3). Each player starts with 12 unit points.");
 		QueueRedraw();
@@ -654,7 +655,7 @@ public partial class BoardGame : Node2D
 
 	// ---- Turn timer ----
 
-	private void StartTurnTimer()
+	public void StartTurnTimer()
 	{
 		_timeRemaining = TurnTimeLimitSeconds;
 		_timerRunning = true;
@@ -710,6 +711,15 @@ public partial class BoardGame : Node2D
 		else
 		{
 			_timerLabel.Modulate = new Color(1f, 1f, 1f);
+		}
+	}
+
+	public void UpdateReadyPlayers()
+	{
+		_readyPlayers++;
+		if(Multiplayer.IsServer() && _readyPlayers==(Multiplayer.GetPeers().Length+1))
+		{
+			_telecom.TriggerStartTimer();
 		}
 	}
 
