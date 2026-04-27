@@ -28,13 +28,16 @@ public sealed class PathMovementState
 	// Tiles-moved count for fatigue tracking.
 	private int _tilesMoved;
 
-	public PathMovementState(BoardUnit unit, IReadOnlyDictionary<Vector2I, string> boardOccupancy)
+	public PathMovementState(BoardUnit unit, IReadOnlyDictionary<Vector2I, string> boardOccupancy, int initialBudget = -1)
 	{
 		_unit = unit;
 		_boardOccupancy = boardOccupancy;
-		_movementPointsRemaining = MovementPointSystem.TotalMovementPointsPerTurn;
+		_movementPointsRemaining = initialBudget >= 0 ? initialBudget : MovementPointSystem.TotalMovementPointsPerTurn;
 		_tilesMoved = 0;
 	}
+
+	/// <summary>Movement points spent so far by steps in this path.</summary>
+	public int PointsSpent => MovementPointSystem.GetMovementCostPerTile(_unit.Stats.Type) * _tilesMoved;
 
 	/// <summary>The starting tile of the unit (never changes).</summary>
 	public Vector2I Origin => _unit.Position;

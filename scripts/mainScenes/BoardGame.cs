@@ -51,6 +51,9 @@ public partial class BoardGame : Node2D
 	// Per-unit committed path states for the active player (persists until deselected or turn resolves).
 	private readonly Dictionary<string, PathMovementState> _unitPaths = new Dictionary<string, PathMovementState>();
 
+	// Shared movement point pool for the active player (12 per turn, spent across all units).
+	private int _movementPointsUsedByCommittedPaths;
+
 	private PlayerSide _activePlayer = PlayerSide.One;
 	private string _selectedUnitId;
 
@@ -541,8 +544,9 @@ public partial class BoardGame : Node2D
 		{
 			AppendLog($"Cancelled path for {_selectedUnitId}.");
 			// Remove any previously committed path for this unit from pending selections.
-			if (_unitPaths.ContainsKey(_selectedUnitId))
+			if (_unitPaths.TryGetValue(_selectedUnitId, out PathMovementState cancelledPath))
 			{
+				_movementPointsUsedByCommittedPaths -= cancelledPath.PointsSpent;
 				_unitPaths.Remove(_selectedUnitId);
 				PlayerTurnSelection selection = _pendingSelections[_activePlayer];
 				selection.Moves.RemoveAll(move => move.UnitId == _selectedUnitId);
@@ -565,7 +569,8 @@ public partial class BoardGame : Node2D
 		}
 		else
 		{
-			_activePath = new PathMovementState(unit, _controller.Board.SnapshotOccupancy());
+			int remainingPoints = MovementPointSystem.TotalMovementPointsPerTurn - _movementPointsUsedByCommittedPaths;
+			_activePath = new PathMovementState(unit, _controller.Board.SnapshotOccupancy(), remainingPoints);
 			// Don't store in _unitPaths yet — only store once the player commits at least one step.
 		}
 
@@ -598,6 +603,13 @@ public partial class BoardGame : Node2D
 
 		string unitId = _selectedUnitId;
 		Vector2I destination = _activePath.GetFinalDestination();
+
+		// Refund the old committed cost for this unit (if it had one) before adding the new cost.
+		if (_unitPaths.TryGetValue(unitId, out PathMovementState oldPath))
+		{
+			_movementPointsUsedByCommittedPaths -= oldPath.PointsSpent;
+		}
+		_movementPointsUsedByCommittedPaths += _activePath.PointsSpent;
 
 		PlayerTurnSelection selection = _pendingSelections[_activePlayer];
 		selection.Moves.RemoveAll(move => move.UnitId == unitId);
@@ -1076,6 +1088,7 @@ public partial class BoardGame : Node2D
 		_lockedPlayers.Clear();
 		_pendingSelections.Clear();
 		_unitPaths.Clear();
+		_movementPointsUsedByCommittedPaths = 0;
 		foreach (PlayerSide side in _turnOrder)
 		{
 			_pendingSelections[side] = new PlayerTurnSelection(side);
@@ -1479,7 +1492,8 @@ public partial class BoardGame : Node2D
 			placementInfo = $" | Placement: {_pendingPlacementType.Value} @ {tileLabel}";
 		}
 
-		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Units: {aliveUnits} | UnitPts: {unitPoints} | Selected: {selectionLabel}{pathInfo}{placementInfo} | Queued Moves: {selection.Moves.Count} | Queued Attacks: {selection.Attacks.Count} | Locked: {_lockedPlayers.Count}/4";
+		int mpRemaining = MovementPointSystem.TotalMovementPointsPerTurn - _movementPointsUsedByCommittedPaths;
+		_statusLabel.Text = $"Active: {PlayerName(_activePlayer)} | Units: {aliveUnits} | UnitPts: {unitPoints} | MovePts: {mpRemaining}/12 | Selected: {selectionLabel}{pathInfo}{placementInfo} | Queued Moves: {selection.Moves.Count} | Queued Attacks: {selection.Attacks.Count} | Locked: {_lockedPlayers.Count}/4";
 		UpdatePurchasePanel();
 	}
 
