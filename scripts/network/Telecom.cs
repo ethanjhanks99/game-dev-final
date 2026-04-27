@@ -108,4 +108,36 @@ public partial class Telecom : Node
 			}
 		}
 	}
+
+	//inputs: string containing player's number
+	//behaviour: converts back to enum and adds that player to lockedplayers in boardgame
+	[Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
+	public void ReceiveLockedStatus(string playerNumber)
+	{
+		PlayerSide player = Enum.Parse<PlayerSide>(playerNumber);
+		_boardGame.AddLockedPlayer(player);
+	}
+
+	//inputs: a playerside
+	//behaviour: sends player number to server as string
+	public void SendLockedStatus(PlayerSide player)
+	{
+		RpcId(1, nameof(ReceiveLockedStatus), player.ToString());
+	}
+
+	//inputs: none
+	//behaviour: triggers resolution locally and on all clients, with a brief delay to allow all selections to get sent to all machines.
+	[Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
+	public async void TriggerResolve()
+	{
+		await ToSignal(GetTree().CreateTimer(0.25f), "timeout");
+		_boardGame.ResolveAllLockedTurns();
+		if(Multiplayer.IsServer())
+		{
+			foreach(long peerId in Multiplayer.GetPeers())
+			{
+				RpcId(peerId, nameof(TriggerResolve));
+			}
+		}
+	}
 }

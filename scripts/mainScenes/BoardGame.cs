@@ -61,6 +61,7 @@ public partial class BoardGame : Node2D
 	private bool _timerRunning;
 
 	private Telecom _telecom;
+	private GameManager _gameManager;
 
 	public override void _Ready()
 	{
@@ -94,6 +95,9 @@ public partial class BoardGame : Node2D
 		_infantryTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteInfantry.png");
 		_archerTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteArcher.png");
 		_calvaryTexture = GD.Load<Texture2D>("res://assets/textures/UnitSheets/CompleteKnight.png");
+
+		_gameManager = GetNode<GameManager>("/root/GameManager");
+		_activePlayer = (PlayerSide)_gameManager.GetPlayerNumber();
 
 		ResetTurnPlanning();
 		InitializeUnitEconomy();
@@ -582,8 +586,10 @@ public partial class BoardGame : Node2D
 			CommitCurrentPath();
 		}
 
-		_lockedPlayers.Add(_activePlayer);
 		AppendLog($"{PlayerName(_activePlayer)} locked in orders.");
+
+		_telecom.SendSelections(1, _pendingSelections);
+		_telecom.SendLockedStatus(_activePlayer);
 
 		if (_lockedPlayers.Count >= _turnOrder.Length)
 		{
@@ -591,11 +597,19 @@ public partial class BoardGame : Node2D
 			return;
 		}
 
-		AdvanceToNextUnlockedPlayer();
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
 		UpdateStatusText();
+	}
+
+	public void AddLockedPlayer(PlayerSide player)
+	{ 
+		_lockedPlayers.Add(player);
+		if(Multiplayer.IsServer() && (Multiplayer.GetPeers().Length+1) == _lockedPlayers.Count)
+		{
+			_telecom.TriggerResolve();
+		}
 	}
 
 	private void OnResolveTurnPressed()
@@ -609,7 +623,7 @@ public partial class BoardGame : Node2D
 		ResolveAllLockedTurns();
 	}
 
-	private void ResolveAllLockedTurns()
+	public void ResolveAllLockedTurns()
 	{
 		if (_pendingPlacementType.HasValue)
 		{
@@ -618,7 +632,6 @@ public partial class BoardGame : Node2D
 
 		StopTurnTimer();
 
-		_telecom.SendSelections(1, _pendingSelections);
 		IEnumerable<PlayerTurnSelection> selections = _turnOrder.Select(side => _pendingSelections[side]);
 		TurnResolutionReport report = _controller.ResolveTurn(selections);
 
@@ -629,7 +642,6 @@ public partial class BoardGame : Node2D
 		}
 
 		ResetTurnPlanning();
-		_activePlayer = PlayerSide.One;
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
@@ -665,7 +677,7 @@ public partial class BoardGame : Node2D
 	private void OnTurnTimerExpired()
 	{
 		_timerRunning = false;
-		AppendLog($"{PlayerName(_activePlayer)}'s time ran out — turn skipped (no moves locked in).");
+		AppendLog($"{PlayerName(_activePlayer)}'s time ran out.");
 
 		if (_pendingPlacementType.HasValue)
 		{
@@ -678,19 +690,8 @@ public partial class BoardGame : Node2D
 			CommitCurrentPath();
 		}
 
-		_lockedPlayers.Add(_activePlayer);
-
-		if (_lockedPlayers.Count >= _turnOrder.Length)
-		{
-			ResolveAllLockedTurns();
-			return;
-		}
-
-		AdvanceToNextUnlockedPlayer();
-		OnPlayerTurnStarted(_activePlayer);
-		ClearSelection();
-		RestartTurnTimer();
-		UpdateStatusText();
+		_telecom.SendSelections(1, _pendingSelections);
+		_telecom.SendLockedStatus(_activePlayer);
 	}
 
 	private void UpdateTimerLabel()
