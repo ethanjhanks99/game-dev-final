@@ -814,6 +814,7 @@ public partial class BoardGame : Node2D
 		{
 			_telecom.TriggerStartTimer();
 		}
+	}
 	// ---- Win / Loss handling ----
 
 	private void HandleEliminationsAndVictory(TurnResolutionReport report)
