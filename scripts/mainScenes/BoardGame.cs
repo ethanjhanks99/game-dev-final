@@ -1225,6 +1225,10 @@ public partial class BoardGame : Node2D
 
 	public void PlaceUnit(PlayerSide player, UnitType type, Vector2I tile)
 	{
+		if (_eliminatedPlayers.Contains(player))
+		{
+			return;
+		}
 		int cost = UnitPointSystem.GetUnitCost(type);
 		int available = _unitPointsByPlayer.TryGetValue(_activePlayer, out int points) ? points : 0;
 		string id = BuildPurchasedUnitId(player, type);
