@@ -78,4 +78,7 @@ public sealed class TurnResolutionReport
 	public List<UnitMoveResolution> MoveResults { get; } = new List<UnitMoveResolution>();
 	public List<UnitAttackResolution> AttackResults { get; } = new List<UnitAttackResolution>();
 	public List<string> RemovedUnits { get; } = new List<string>();
+
+	// Players who lost all their units this turn and are now eliminated.
+	public List<PlayerSide> EliminatedPlayers { get; } = new List<PlayerSide>();
 }

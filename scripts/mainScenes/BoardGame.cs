@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Linq;
 
 public partial class BoardGame : Node2D
@@ -37,6 +38,9 @@ public partial class BoardGame : Node2D
 	private Texture2D _archerTexture;
 	private Texture2D _calvaryTexture;
 
+	// Base capture progress
+	private Dictionary<PlayerSide, int> _captureProgress = new Dictionary<PlayerSide, int>();
+
 	private readonly HashSet<PlayerSide> _lockedPlayers = new HashSet<PlayerSide>();
 	private readonly Dictionary<PlayerSide, PlayerTurnSelection> _pendingSelections = new Dictionary<PlayerSide, PlayerTurnSelection>();
 	private readonly Dictionary<PlayerSide, int> _unitPointsByPlayer = new Dictionary<PlayerSide, int>();
@@ -63,6 +67,10 @@ public partial class BoardGame : Node2D
 	private Telecom _telecom;
 	private GameManager _gameManager;
 	private int _readyPlayers = 0;
+	// Win/loss state.
+	// Players who have been eliminated (no units left). They spectate but cannot act.
+	private readonly HashSet<PlayerSide> _eliminatedPlayers = new HashSet<PlayerSide>();
+	private bool _gameOver;
 
 	public override void _Ready()
 	{
@@ -108,6 +116,12 @@ public partial class BoardGame : Node2D
 		AppendLog("Board initialized. Left-click your unit to select, then click highlighted tiles to build a path. Right-click to cancel. Click unit again or click away to commit path.");
 		AppendLog("Unit purchases: [I] Infantry (1), [A] Archer (2), [C] Cavalry (3). Each player starts with 12 unit points.");
 		QueueRedraw();
+
+		// Set Initial Capture Progress to 0
+		foreach (PlayerSide side in _turnOrder)
+		{
+			_captureProgress[side] = 0;
+		}
 	}
 
 	public override void _Process(double delta)
@@ -128,6 +142,7 @@ public partial class BoardGame : Node2D
 	public override void _Draw()
 	{
 		DrawBoardTiles();
+		DrawElimCounter();
 		DrawUnits();
 	}
 
@@ -242,10 +257,49 @@ public partial class BoardGame : Node2D
 			}
 			DrawTextureRectRegion(rotatedTexture, palaceRect, PalaceSrcRegion[1 + i]);
 		}
-		
+	}
 
-		
-		//GD.Print(new Rect2(PalaceSrcRegion.Position.X + 128, PalaceSrcRegion.Position.Y, 128, 96));
+	private void DrawElimCounter()
+	{
+		foreach (PlayerSide side in _turnOrder)
+		{
+			List<Vector2I> counterTiles = new List<Vector2I>();
+			switch(side)
+			{
+				case PlayerSide.One:
+					counterTiles.Add(new Vector2I(0, -8));
+					counterTiles.Add(new Vector2I(1, -8));
+					counterTiles.Add(new Vector2I(2, -8));
+					break;
+				case PlayerSide.Two:
+					counterTiles.Add(new Vector2I(15, 0));
+					counterTiles.Add(new Vector2I(15, 1));
+					counterTiles.Add(new Vector2I(15, 2));
+					break;
+				case PlayerSide.Three:
+					counterTiles.Add(new Vector2I(7, 15));
+					counterTiles.Add(new Vector2I(6, 15));
+					counterTiles.Add(new Vector2I(5, 15));
+					break;
+				case PlayerSide.Four:
+					counterTiles.Add(new Vector2I(-8, 7));
+					counterTiles.Add(new Vector2I(-8, 6));
+					counterTiles.Add(new Vector2I(-8, 5));
+					break;
+				default:
+					break;
+			}
+
+			for (int i = 0; i < 3; i++)
+			{
+				Vector2 center = TileToScreen(counterTiles[i]) + new Vector2(TilePixelSize * 0.5f, TilePixelSize * 0.5f);
+				if (i < _captureProgress[side]){
+					Color sideColor = GetPlayerColor(side);
+					DrawCircle(center, TilePixelSize * 0.4f, sideColor);
+				}
+				DrawArc(center, TilePixelSize * 0.4f, 0f, Mathf.Tau, 24, new Color(0f, 0f, 0f), 2f);
+			}
+		}
 	}
 
 	private void DrawUnits()
@@ -285,17 +339,11 @@ public partial class BoardGame : Node2D
 			}
 
 			Vector2 center = TileToScreen(unit.Position) + new Vector2(TilePixelSize * 0.5f, TilePixelSize * 0.5f);
-			//Color unitColor = GetPlayerColor(unit.Owner);
-			//DrawCircle(center, TilePixelSize * 0.32f, unitColor);
 
 			if (unit.Id == _selectedUnitId)
 			{
 				DrawArc(center, TilePixelSize * 0.4f, 0f, Mathf.Tau, 24, new Color(1f, 1f, 1f), 2f);
 			}
-
-			//Vector2I facing = GridTypes.FacingToVector(unit.Facing);
-			//Vector2 facingVector = new Vector2(facing.X, facing.Y) * (TilePixelSize * 0.22f);
-			//DrawLine(center, center + facingVector, new Color(0.05f, 0.05f, 0.05f), 2f);
 
 			DrawUnitHealthBar(unit, rect);
 		}
@@ -592,12 +640,6 @@ public partial class BoardGame : Node2D
 		_telecom.SendSelections(1, _pendingSelections);
 		_telecom.SendLockedStatus(_activePlayer);
 
-		if (_lockedPlayers.Count >= _turnOrder.Length)
-		{
-			ResolveAllLockedTurns();
-			return;
-		}
-
 		OnPlayerTurnStarted(_activePlayer);
 		ClearSelection();
 		RestartTurnTimer();
@@ -641,6 +683,57 @@ public partial class BoardGame : Node2D
 		{
 			AppendLog($"Removed unit: {removed}");
 		}
+
+		foreach (PlayerSide side in _turnOrder)
+		{
+			if (_eliminatedPlayers.Contains(side))
+			{
+				continue;
+			}
+
+			if (!_baseAreas.TryGetValue(side, out HashSet<Vector2I> area))
+			{
+				continue;
+			}
+
+			Vector2I anchor = GridTypes.BaseTiles.TryGetValue(side, out Vector2I baseTile)
+				? baseTile
+				: area.First();
+
+			IEnumerable<Vector2I> ordered = area
+				.OrderBy(t => GridTypes.ManhattanDistance(t, anchor))
+				.ThenBy(t => t.Y)
+				.ThenBy(t => t.X);
+
+			bool enemyPresent = false;
+
+			foreach (Vector2I checkTile in ordered)
+			{
+				if (_controller.Board.TryGetUnitAt(checkTile, out BoardUnit checkUnit) && checkUnit.Owner != side)
+				{
+					_captureProgress[side] += 1;
+					if (_captureProgress[side] >= 3)
+					{
+						report.EliminatedPlayers.Add(side);
+					} else {
+						AppendLog($"{PlayerName(side)}'s base being captured by unit {checkUnit.Id}. Base capture progress: {_captureProgress[side]}/3.");
+					}
+					enemyPresent = true;
+					break;
+				}
+			}
+
+			if (_captureProgress[side] > 0 && !enemyPresent)
+			{
+				_captureProgress[side] = 0;
+				AppendLog($"{PlayerName(side)}'s base is no longer being captured. Reset capture progress to 0.");
+			}
+		}
+
+		// Handle any newly eliminated players before advancing turn.
+		HandleEliminationsAndVictory(report);
+
+		if (_gameOver) return;
 
 		ResetTurnPlanning();
 		OnPlayerTurnStarted(_activePlayer);
@@ -721,6 +814,238 @@ public partial class BoardGame : Node2D
 		{
 			_telecom.TriggerStartTimer();
 		}
+	// ---- Win / Loss handling ----
+
+	private void HandleEliminationsAndVictory(TurnResolutionReport report)
+	{
+		// Process each newly eliminated player.
+		foreach (PlayerSide eliminated in report.EliminatedPlayers)
+		{
+			if (_eliminatedPlayers.Contains(eliminated)) continue;
+
+			_eliminatedPlayers.Add(eliminated);
+			AppendLog($"{PlayerName(eliminated)} has been eliminated!");
+
+			// Remove all remaining units for this player from the board.
+			List<string> theirUnits = _controller.Board.Units
+				.Where(u => u.Owner == eliminated)
+				.Select(u => u.Id)
+				.ToList();
+			foreach (string unitId in theirUnits)
+			{
+				_controller.Board.ForceRemoveUnit(unitId);
+			}
+
+			ShowEliminationPopup(eliminated);
+		}
+
+		// Check for a winner: only one active player remaining.
+		List<PlayerSide> survivors = _turnOrder
+			.Where(s => !_eliminatedPlayers.Contains(s))
+			.ToList();
+
+		if (survivors.Count == 1)
+		{
+			_gameOver = true;
+			StopTurnTimer();
+			AppendLog($"{PlayerName(survivors[0])} wins!");
+			ShowVictoryPopup(survivors[0]);
+		}
+		else if (survivors.Count == 0)
+		{
+			// All players eliminated simultaneously — draw.
+			_gameOver = true;
+			StopTurnTimer();
+			AppendLog("Draw — all players eliminated simultaneously!");
+			ShowDrawPopup();
+		}
+
+		QueueRedraw();
+	}
+
+	/// <summary>
+	/// Creates a transient elimination popup for the given player.
+	/// Disappears after 4 seconds or on click.
+	/// </summary>
+	private void ShowEliminationPopup(PlayerSide side)
+	{
+		CanvasLayer overlay = CreateGameOverlay(100);
+
+		// Dark semi-transparent backdrop.
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.55f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		// Centred card.
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(380, 160);
+		card.Position = new Vector2(-190, -80);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 12);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "You Have Been Eliminated";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 22);
+		title.Modulate = new Color(0.95f, 0.25f, 0.25f);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = $"{PlayerName(side)} — all units lost.\nClick anywhere or wait to spectate.";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.AutowrapMode = TextServer.AutowrapMode.Word;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+
+		// Auto-dismiss after 4 seconds or on any click.
+		double elapsed = 0.0;
+		backdrop.GuiInput += (InputEvent ev) =>
+		{
+			if (ev is InputEventMouseButton mb && mb.Pressed) overlay.QueueFree();
+		};
+		card.GuiInput += (InputEvent ev) =>
+		{
+			if (ev is InputEventMouseButton mb && mb.Pressed) overlay.QueueFree();
+		};
+
+		// Use a Godot Timer node for auto-dismiss.
+		Timer dismissTimer = new Timer();
+		dismissTimer.WaitTime = 4.0;
+		dismissTimer.OneShot = true;
+		dismissTimer.Timeout += () => { if (IsInstanceValid(overlay)) overlay.QueueFree(); };
+		overlay.AddChild(dismissTimer);
+		dismissTimer.Start();
+
+		// Spectator "Main Menu" button pinned to bottom of screen (persists after popup closes).
+		AddSpectatorBar(side);
+	}
+
+	/// <summary>
+	/// Creates a persistent victory popup for the winner. Does not auto-dismiss.
+	/// </summary>
+	private void ShowVictoryPopup(PlayerSide winner)
+	{
+		CanvasLayer overlay = CreateGameOverlay(101);
+
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.65f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(400, 180);
+		card.Position = new Vector2(-200, -90);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 14);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "You Win!";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 30);
+		title.Modulate = GetPlayerColor(winner);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = $"{PlayerName(winner)} — last army standing!";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Return to Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+	}
+
+	/// <summary>
+	/// Creates a persistent draw popup.
+	/// </summary>
+	private void ShowDrawPopup()
+	{
+		CanvasLayer overlay = CreateGameOverlay(101);
+
+		ColorRect backdrop = new ColorRect();
+		backdrop.Color = new Color(0f, 0f, 0f, 0.65f);
+		backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		overlay.AddChild(backdrop);
+
+		PanelContainer card = new PanelContainer();
+		card.SetAnchorsPreset(Control.LayoutPreset.Center);
+		card.CustomMinimumSize = new Vector2(400, 160);
+		card.Position = new Vector2(-200, -80);
+		overlay.AddChild(card);
+
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 14);
+		card.AddChild(vbox);
+
+		Label title = new Label();
+		title.Text = "Draw!";
+		title.HorizontalAlignment = HorizontalAlignment.Center;
+		title.AddThemeFontSizeOverride("font_size", 28);
+		vbox.AddChild(title);
+
+		Label sub = new Label();
+		sub.Text = "All players were eliminated simultaneously.";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.AutowrapMode = TextServer.AutowrapMode.Word;
+		vbox.AddChild(sub);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Return to Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		vbox.AddChild(menuBtn);
+	}
+
+	/// <summary>
+	/// Adds a persistent spectator bar at the bottom of the screen for an eliminated player.
+	/// Shows who they are and gives a Main Menu button that stays visible while spectating.
+	/// </summary>
+	private void AddSpectatorBar(PlayerSide side)
+	{
+		CanvasLayer barLayer = CreateGameOverlay(99);
+
+		PanelContainer bar = new PanelContainer();
+		bar.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+		bar.CustomMinimumSize = new Vector2(0, 44);
+		bar.Position = new Vector2(0, -44);
+		barLayer.AddChild(bar);
+
+		HBoxContainer hbox = new HBoxContainer();
+		hbox.AddThemeConstantOverride("separation", 16);
+		bar.AddChild(hbox);
+
+		Label spectatorLabel = new Label();
+		spectatorLabel.Text = $"☠ {PlayerName(side)} eliminated — spectating";
+		spectatorLabel.VerticalAlignment = VerticalAlignment.Center;
+		spectatorLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+		hbox.AddChild(spectatorLabel);
+
+		Button menuBtn = new Button();
+		menuBtn.Text = "Main Menu";
+		menuBtn.Pressed += OnMainMenuPressed;
+		hbox.AddChild(menuBtn);
+	}
+
+	/// <summary>Creates a new CanvasLayer parented to this node, for overlay popups.</summary>
+	private CanvasLayer CreateGameOverlay(int layer)
+	{
+		CanvasLayer cl = new CanvasLayer();
+		cl.Layer = layer;
+		AddChild(cl);
+		return cl;
 	}
 
 	private void OnMainMenuPressed()
@@ -737,7 +1062,7 @@ public partial class BoardGame : Node2D
 		for (int step = 1; step <= _turnOrder.Length; step++)
 		{
 			PlayerSide candidate = _turnOrder[(currentIndex + step) % _turnOrder.Length];
-			if (!_lockedPlayers.Contains(candidate))
+			if (!_lockedPlayers.Contains(candidate) && !_eliminatedPlayers.Contains(candidate))
 			{
 				_activePlayer = candidate;
 				return;
