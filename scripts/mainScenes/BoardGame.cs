@@ -849,7 +849,9 @@ public partial class BoardGame : Node2D
 				_controller.Board.ForceRemoveUnit(unitId);
 			}
 
-			ShowEliminationPopup(eliminated);
+			if (_activePlayer == eliminated) {
+				ShowEliminationPopup(eliminated);
+			}
 		}
 
 		// Check for a winner: only one active player remaining.
